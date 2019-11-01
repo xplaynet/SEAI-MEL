@@ -1,4 +1,5 @@
 #include <Arduino_FreeRTOS.h>
+#include <semphr.h>
 #include <avr/io.h>
 #include <avr/interrupt.h>
 #include <Wire.h>
@@ -6,9 +7,12 @@
 //#include <Rotary.h>
 #include <PID_v1.h>
 
+#define DACPWM 11
 #define PWM 10 //OC1B
 #define UP 5
 #define DOWN 4
+
+#define TASKNUMBER 3
 
 
 //Shared variables
@@ -18,6 +22,7 @@ volatile unsigned int desiredRPM = 0;        //RPM selected by operator
 volatile bool loopflag = false;              // flag for soft start
 volatile bool runflag = false;               // flag for motor running state
 
+SemaphoreHandle_t semDAC = NULL;
 
 unsigned int count;                 // tacho pulses count variable
 unsigned int lastcount = 0;         // additional tacho pulses count variable
@@ -58,6 +63,7 @@ void setup() {
   digitalWrite(UP, HIGH);           // turn on pullup resistors
   digitalWrite(DOWN, HIGH);         // turn on pullup resistors
 
+
   // set up Timer1 Phase and Frequency Correct PWM Mode
   pinMode(PWM, OUTPUT);                            //PWM PIN for OC1B
   //reset registers
@@ -71,22 +77,37 @@ void setup() {
   OCR1A = 400;                                      //FreqPWM = (16 000 000) / (2 * 1 * 400) = 20 000
   OCR1B = 0;                                        //Register to compare for cycle
 
+  //Set up Timer2 for DAC with fast PWM
+  pinMode(DACPWM,OUTPUT);
+  //reset registers
+  TCCR2A = 0;
+  TCCR2B = 0;
+  TCNT2 = 0;
+
+  //freqPWM = 62 500
+  TCCR2A = _BV(COM2A1) | _BV(WGM21) | _BV(WGM20);
+  TCCR2B = _BV(CS20);
+  OCR2A = 0;
+  
+
   // set up tacho sensor interrupt IRQ1 on pin3
   attachInterrupt(1, tacho, FALLING);
 
   // initialize serial communication at 9600 bits per second:
-  Serial.begin(9600);
+  Serial.begin(115200);
 
   while (!Serial) {
     ; // wait for serial port to connect. Needed for native USB, on LEONARDO, MICRO, YUN, and other 32u4 based boards.
   }
+
+  semDAC = xSemaphoreCreateMutex();
 
   xTaskCreate(
     TaskButtonReader
     ,  (const portCHAR *)"BReader"   // A name just for humans
     ,  164  // This stack size can be checked & adjusted by reading the Stack Highwater
     ,  NULL
-    ,  2  // Priority, with 3 (configMAX_PRIORITIES - 1) being the highest, and 0 being the lowest.
+    ,  1  // Priority, with 3 (configMAX_PRIORITIES - 1) being the highest, and 0 being the lowest.
     ,  &xHandle );
 
   xTaskCreate(
@@ -94,7 +115,7 @@ void setup() {
     ,  (const portCHAR *)"SerialPrinter"   // A name just for humans
     ,  128  // This stack size can be checked & adjusted by reading the Stack Highwater
     ,  NULL
-    ,  1  // Priority, with 3 (configMAX_PRIORITIES - 1) being the highest, and 0 being the lowest.
+    ,  0  // Priority, with 3 (configMAX_PRIORITIES - 1) being the highest, and 0 being the lowest.
     ,  NULL );
 
   xTaskCreate(
@@ -102,7 +123,7 @@ void setup() {
     ,  (const portCHAR *)"PIDcontrol"   // A name just for humans
     ,  256  // This stack size can be checked & adjusted by reading the Stack Highwater
     ,  NULL
-    ,  3  // Priority, with 3 (configMAX_PRIORITIES - 1) being the highest, and 0 being the lowest.
+    ,  2  // Priority, with 3 (configMAX_PRIORITIES - 1) being the highest, and 0 being the lowest.
     ,  NULL );
   // Now the task scheduler, which takes over control of scheduling individual tasks, is automatically started.
 }
@@ -144,6 +165,7 @@ void TaskButtonReader(void *pvParameters)
   unsigned long timer;
 
   for (;;) {
+    debugDAC(uxTaskPriorityGet(NULL),1);
     tempRPM = 0;
     timer = millis();
 
@@ -190,7 +212,7 @@ void TaskButtonReader(void *pvParameters)
     } else if (!tempRPM) runflag = 0 ;
 
     desiredRPM = tempRPM;
-
+    debugDAC(uxTaskPriorityGet(NULL),0);
     vTaskDelay(4);
   }
 
@@ -218,7 +240,7 @@ void TaskUpdatePID(void *pvParameters) {
   Setpoint = 20;
 
   for (;;) {
-
+    debugDAC(uxTaskPriorityGet(NULL),1);
     localSlow = loopflag;
     localRun = runflag;
 
@@ -251,7 +273,7 @@ void TaskUpdatePID(void *pvParameters) {
     else cycle = 0;
 
     OCR1B = cycle;
-
+    debugDAC(uxTaskPriorityGet(NULL),0);
     vTaskDelay(4);
   }
 
@@ -266,18 +288,45 @@ void TaskSerialPrinter(void *pvParameters) {
   UBaseType_t uxHighWaterMark;
   uxHighWaterMark = uxTaskGetStackHighWaterMark( xHandle );
   for (;;) {
+    debugDAC(uxTaskPriorityGet(NULL),1);
     timer = millis();
     Serial.print(timer);
     Serial.print("\ndesiredRPM:");
     Serial.print(desiredRPM);
     Serial.print("\nCycle:");
-    Serial.print(uxHighWaterMark);
+    Serial.print(OCR1B);
     Serial.print("\n");
+    debugDAC(uxTaskPriorityGet(NULL),0);
     vTaskDelay( 20 );
   }
 
 }
 
+//My very simple try at having a task tracer. to use with 22uF capacitor, 3.3kOhm resistor, pin 11, osciloscope
+void debugDAC(int i,int state){
+
+    static unsigned int values[TASKNUMBER];
+
+    if (semDAC != NULL){
+      if(xSemaphoreTake(semDAC,(TickType_t) 2) == pdTRUE){
+        
+        //update TASK state in array
+        values[i] = state;
+
+        //Update PWM output 
+        for (i=0; i<TASKNUMBER ; i++){
+          if(values[i] != 0){
+            OCR2A = (256/TASKNUMBER) * i;
+            break;
+          }
+        }
+        if (i == TASKNUMBER) OCR2A = 0;
+        xSemaphoreGive(semDAC);
+      }      
+    }
+    
+  
+}
 
 void tacho() {
   count++;
