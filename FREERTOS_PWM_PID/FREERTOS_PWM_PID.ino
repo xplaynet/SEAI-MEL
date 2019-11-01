@@ -6,13 +6,20 @@
 //#include <Rotary.h>
 #include <PID_v1.h>
 
-#define PWM 10
+#define PWM 10 //OC1B
 #define UP 5
 #define DOWN 4
 
-unsigned int RPM;                   // real rpm variable
+
+//Shared variables
+volatile unsigned int RPM;                   // real rpm variable
+volatile unsigned int desiredRPM = 0;        //RPM selected by operator
+
+volatile bool loopflag = false;              // flag for soft start
+volatile bool runflag = false;               // flag for motor running state
+
+
 unsigned int count;                 // tacho pulses count variable
-unsigned int cycle = 0;
 unsigned int lastcount = 0;         // additional tacho pulses count variable
 unsigned long lastcounttime = 0;
 unsigned long lastflash;
@@ -27,44 +34,21 @@ const int sampleRate = 1;           // Variable that determines how fast our PID
 const int debounceDelay = 50;       // the debounce time; increase if the output flickers
 
 //PWM duty-cycle. 400 -> 100%
+//These variable are also shared but READ-ONLY so there is no concurrency problems
 const int minoutputlimit = 50;      // limit of PID output
 const int maxoutputlimit = 400;     // limit of PID output
 const int minrpm = 300;           // min RPM of the range 1
 const int maxrpm = 5000;          // max RPM of the range 1
 
-
-volatile unsigned int desiredRPM = 0;               //RPM selected by operator
-
-byte lastButtonState = HIGH;
-byte lastButtonState2 = HIGH;  // the previous reading from the input pin
-byte downstate = HIGH;
-byte upstate = HIGH;
-
-bool loopflag = false;              // flag for soft start
-bool startflag = false;             // flag for motor start delay
-bool runflag = false;               // flag for motor running state
-
-double Setpoint, Input, Output;       // define PID variables
-double sKp = 0.1, sKi = 0.2, sKd = 0; // PID tuning parameters for starting motor
-double rKp = 0.25, rKi = 1, rKd = 0;  // PID tuning parameters for runnig motor
-
-//LiquidCrystal_I2C lcd(0x26, 16, 2);   // set the LCD address to 0x26 for a 16 chars and 2 line display
-//Rotary r = Rotary(12, 11);            // define rottary encoder and pins
-PID myPID(&Input, &Output, &Setpoint, sKp, sKi, sKd, DIRECT); // define PID variables and parameters
-
-
 //define function to count RPM on interrupt
 void tacho();
 
+//define tasks
 void TaskButtonReader(void *pvParameters);
-void updatePID();
+void TaskUpdatePID(void *pvParameters);
 void TaskSerialPrinter(void *pvParameters);
 
-
-// define two tasks for Blink & AnalogRead
-//void TaskBlink( void *pvParameters );
-//void TaskAnalogRead( void *pvParameters );
-
+TaskHandle_t xHandle = NULL;
 
 // the setup function runs once when you press reset or power the board
 void setup() {
@@ -73,14 +57,6 @@ void setup() {
   pinMode(DOWN, INPUT);             // Decrease RPM
   digitalWrite(UP, HIGH);           // turn on pullup resistors
   digitalWrite(DOWN, HIGH);         // turn on pullup resistors
-
-  Input = 20;                        // assign initial value for PID
-  Setpoint = 20;                     // assign initial value for PID
-
-  //turn the PID on
-  myPID.SetMode(AUTOMATIC);
-  myPID.SetOutputLimits(minoutputlimit, maxoutputlimit);
-  myPID.SetSampleTime(sampleRate);    // Sets the sample rate
 
   // set up Timer1 Phase and Frequency Correct PWM Mode
   pinMode(PWM, OUTPUT);                            //PWM PIN for OC1B
@@ -108,17 +84,25 @@ void setup() {
   xTaskCreate(
     TaskButtonReader
     ,  (const portCHAR *)"BReader"   // A name just for humans
-    ,  128  // This stack size can be checked & adjusted by reading the Stack Highwater
+    ,  164  // This stack size can be checked & adjusted by reading the Stack Highwater
     ,  NULL
     ,  2  // Priority, with 3 (configMAX_PRIORITIES - 1) being the highest, and 0 being the lowest.
-    ,  NULL );
+    ,  &xHandle );
 
   xTaskCreate(
     TaskSerialPrinter
-    ,  (const portCHAR *)"BReader"   // A name just for humans
+    ,  (const portCHAR *)"SerialPrinter"   // A name just for humans
     ,  128  // This stack size can be checked & adjusted by reading the Stack Highwater
     ,  NULL
     ,  1  // Priority, with 3 (configMAX_PRIORITIES - 1) being the highest, and 0 being the lowest.
+    ,  NULL );
+
+  xTaskCreate(
+    TaskUpdatePID
+    ,  (const portCHAR *)"PIDcontrol"   // A name just for humans
+    ,  256  // This stack size can be checked & adjusted by reading the Stack Highwater
+    ,  NULL
+    ,  3  // Priority, with 3 (configMAX_PRIORITIES - 1) being the highest, and 0 being the lowest.
     ,  NULL );
   // Now the task scheduler, which takes over control of scheduling individual tasks, is automatically started.
 }
@@ -141,7 +125,7 @@ void TaskButtonReader(void *pvParameters)
     Button Reader
     Reads button state from assigned ports
 
-    It includes code to deal with bouncing inputs and avoids problems with long pressing buttons.
+    It includes code to deal with bouncing inputs and deals with long presses.
   */
 
   byte lastStateUp = HIGH;
@@ -155,11 +139,12 @@ void TaskButtonReader(void *pvParameters)
   unsigned long debounceDown = 0;
 
   int reading;
-  unsigned long tempRPM;
+  long tempRPM;                   //desiredRPM is a shared variable so we need something to store
+  //it so we can modify freely locally and at the end modify desiredRPM
   unsigned long timer;
 
   for (;;) {
-    tempRPM = desiredRPM;
+    tempRPM = 0;
     timer = millis();
 
     reading = digitalRead(UP); // read the state of the switch into a local variable:
@@ -182,31 +167,111 @@ void TaskButtonReader(void *pvParameters)
     }
     else if ((timer - debounceDown) > debounceDelay) {
       if (timer - timeoutDown > 500) {
-        if (reading == LOW && tempRPM >= 100)tempRPM -= 100;
+        if (reading == LOW)tempRPM -= 100; //Avoid overflow 
         timeoutDown = timer;
         StateDown = reading;
       }
     }
     lastStateDown = reading;
+
+    //Make adjustments to tempRPM to avoid getting out of bounds. the min rpm thing might be kinda useless
+    tempRPM += desiredRPM;
     if (tempRPM > maxrpm) tempRPM = maxrpm;
-    else if (tempRPM < minrpm) tempRPM = 0;
+    else if (tempRPM == 100) tempRPM = 300;
+    else if (tempRPM == 200) tempRPM = 0;
+    else if (tempRPM < 0) tempRPM = 0;
+
+    //Set flags for PID, maybe separate task when automated control is added
+    if (tempRPM > 0) {
+      if (!runflag) {
+        if (RPM < minrpm)loopflag = true; //If cold starting set slow start. Cold starting is defined if motor is below minimum RPM
+        runflag = true;
+      }
+    } else if (!tempRPM) runflag = 0 ;
 
     desiredRPM = tempRPM;
-    vTaskDelay(3);
+
+    vTaskDelay(4);
   }
 
 }
-//void updatePID();
+void TaskUpdatePID(void *pvParameters) {
+
+  (void) pvParameters;
+
+  double Setpoint, Input, Output;       // define PID variables
+  double sKp = 0.1, sKi = 0.2, sKd = 0; // PID tuning parameters for starting motor
+  double rKp = 0.25, rKi = 1, rKd = 0;  // PID tuning parameters for runnig motor
+
+  bool localSlow, localRun;
+
+  unsigned int cycle = 0;
+
+  //Setup PID 
+  PID myPID(&Input, &Output, &Setpoint, sKp, sKi, sKd, DIRECT);
+  myPID.SetMode(AUTOMATIC);
+  myPID.SetOutputLimits(minoutputlimit, maxoutputlimit);
+  myPID.SetSampleTime(sampleRate);    // Sets the sample rate
+
+  //Initialize things
+  Input = 20;
+  Setpoint = 20;
+
+  for (;;) {
+
+    localSlow = loopflag;
+    localRun = runflag;
+
+    if (localRun) {
+      //soft start
+      if (localSlow == true) {
+        myPID.SetTunings(sKp, sKi, sKd);        // Set the PID gain constants and start
+        if (RPM > minrpm) {
+          lastcounttime = millis();
+          lastpiddelay = millis();
+          localRun = true;
+          localSlow = false;
+        }
+      }
+
+      // normal motor running state
+      else if (localSlow == false) {
+        unsigned long piddelay = millis();
+        if ((piddelay - lastpiddelay) > 1000) {     // delay to switch PID values. Prevents hard start
+          myPID.SetTunings(rKp, rKi, rKd);          // Set the PID gain constants and start
+          lastpiddelay = millis();
+        }
+      }
+      Input = RPM;
+      Setpoint = desiredRPM;
+      myPID.Compute();
+      //dimming = map(Output, minoutputlimit, maxoutputlimit, maxoutputlimit, minoutputlimit); // reverse the output
+      cycle = constrain(Output, minoutputlimit, maxoutputlimit);     // check that dimming is in 20-625 range
+    }
+    else cycle = 0;
+
+    OCR1B = cycle;
+
+    vTaskDelay(4);
+  }
+
+
+
+}
 void TaskSerialPrinter(void *pvParameters) {
 
   (void) pvParameters;
 
   unsigned long timer;
+  UBaseType_t uxHighWaterMark;
+  uxHighWaterMark = uxTaskGetStackHighWaterMark( xHandle );
   for (;;) {
     timer = millis();
     Serial.print(timer);
     Serial.print("\ndesiredRPM:");
     Serial.print(desiredRPM);
+    Serial.print("\nCycle:");
+    Serial.print(uxHighWaterMark);
     Serial.print("\n");
     vTaskDelay( 20 );
   }
