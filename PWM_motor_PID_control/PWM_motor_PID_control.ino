@@ -22,7 +22,7 @@
 
 unsigned int RPM;                   // real rpm variable
 unsigned int count;                 // tacho pulses count variable
-unsigned int cycle=0;
+unsigned int cycle = 0;
 unsigned int lastcount = 0;         // additional tacho pulses count variable
 unsigned long lastcounttime = 0;
 unsigned long lastflash;
@@ -30,6 +30,8 @@ unsigned long lastpiddelay = 0;
 unsigned long previousMillis = 0;
 unsigned long lastDebounceTime = 0;
 unsigned long lastDebounceTime2 = 0;
+unsigned long timeout1 = 0;
+unsigned long timeout2 = 0;
 
 const int sampleRate = 1;           // Variable that determines how fast our PID loop
 const int rpmcorrection = 86;       // sito kazkodel reikia, kad realus rpm atitiktu matuojamus
@@ -59,6 +61,8 @@ byte relayState = LOW;              // the current state of the relay pin
 byte buttonState;                   // the current reading from the input pin
 byte lastButtonState = HIGH;
 byte lastButtonState2 = HIGH;  // the previous reading from the input pin
+byte downstate = HIGH;
+byte upstate = HIGH;
 
 bool loopflag = false;              // flag for soft start
 bool startflag = false;             // flag for motor start delay
@@ -156,7 +160,6 @@ void tacho() {
 void loop() {
 
 
-
   //check inputs
 
   int reading = digitalRead(UP); // read the state of the switch into a local variable:
@@ -164,17 +167,28 @@ void loop() {
     lastDebounceTime = millis();     // reset the debouncing timer
   }
   else if ((millis() - lastDebounceTime) > debounceDelay) {
-    desiredRPM += 100;
+    if (reading != upstate) {
+      if (millis() - timeout1 > 500) {
+        if (reading == HIGH)desiredRPM += 100;
+        timeout1 = millis();
+        upstate = reading;
+      }
+    }
   }
   lastButtonState = reading;
 
-  
+
   reading = digitalRead(DOWN); // read the state of the switch into a local variable:
   if (reading != lastButtonState2) {  // If the switch changed, due to noise or pressing
     lastDebounceTime2 = millis();     // reset the debouncing timer
   }
   else if ((millis() - lastDebounceTime2) > debounceDelay) {
-    desiredRPM -= 100;
+    if (reading != downstate)
+      if (millis() - timeout2 > 500) {
+        if (reading == HIGH)desiredRPM = desiredRPM - 100;
+        timeout2 = millis();
+        downstate = reading;
+      }
   }
   lastButtonState2 = reading;
 
@@ -293,19 +307,26 @@ void loop() {
   OCR1B = cycle;
   // diagnose a fault and turn on protection
 
-//  unsigned long counttime = millis();
-//  if (counttime - lastcounttime >= 1000) {
-//    if (count == 0 && relayState == HIGH && runflag == true) {
-//      startflag = false;            // flag to turn off triac before relay turns off
-//      delay (300);                  // delay to prevent sparks on relay contacts
-//      digitalWrite(RELAY, LOW);
-//      relayState = LOW;
-//      //      stuckerror();
-//    }
-//    lastcount = count;
-//    count = 0;
-//    lastcounttime = millis();
-//  }
+  Serial.print("\nCycle:");
+  Serial.print(cycle);
+  Serial.print("\ndesiredRPM:");
+  Serial.print(desiredRPM);
+
+
+
+  //  unsigned long counttime = millis();
+  //  if (counttime - lastcounttime >= 1000) {
+  //    if (count == 0 && relayState == HIGH && runflag == true) {
+  //      startflag = false;            // flag to turn off triac before relay turns off
+  //      delay (300);                  // delay to prevent sparks on relay contacts
+  //      digitalWrite(RELAY, LOW);
+  //      relayState = LOW;
+  //      //      stuckerror();
+  //    }
+  //    lastcount = count;
+  //    count = 0;
+  //    lastcounttime = millis();
+  //  }
 
   //reset rpm after motor stops
   //  if (count == 0 && relayState == LOW) {
