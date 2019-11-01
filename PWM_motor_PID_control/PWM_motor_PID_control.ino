@@ -151,7 +151,7 @@ void setup() {
 void tacho() {
   count++;
   unsigned long time = micros() - lastflash;
-  float time_in_sec  = ((float)time + rpmcorrection) / 1000000;
+  float time_in_sec  = ((float)time) / 1000000;
   float prerpm = 60 / time_in_sec;
   RPM = prerpm;
   lastflash = micros();
