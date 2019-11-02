@@ -7,7 +7,13 @@ https://create.arduino.cc/projecthub/saulius-bandzevicius/arduino-based-universa
 
 **Table of Contents**
 
-[TOC]
+   + [Descrição](#descrição)
+   + [Funcionalidades](#funcionalidades)
+   + [Porquê RTOS?](#porquê-rtos)
+   + [Lista de materiais](#lista-de-materiais)
+     - [Arduino UNO](#arduino-uno)
+     - [PHOTOTRANSISTOR OPTOCOUPLER 6N136](#phototransistor-optocoupler-6n136)
+   + [Esquemática](#esquemática)
 
 ### Descrição
 Este projecto tem como objectivo implementar um programa de controlo de motor com PWM num arduino UNO a correr uma kernel de sistemas operativos de tempo real *FreeRTOS*.
@@ -29,7 +35,7 @@ A primeira vantagem deve-se à possibilidade da prioritizar tasks e definir a fr
 
 Para a segunda vantagem, visto ser possível separar as diferentes funcionalides pelas suas próprias tasks, o desenvolvimento de novas tasks pode ser feito independente do resto do código. Apenas é necessário ter alguns cuidados com os recursos partilhados entre tasks.
 
-### Lista de materias
+### Lista de materiais
 
 #### Arduino UNO
 Foi escolhido como o microcontrolador a usar no sistema devido à sua versatibilidade, disponibilade de documentação online e experiência com o mesmo em projectos anteriores.
