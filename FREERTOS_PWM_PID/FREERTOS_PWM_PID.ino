@@ -15,6 +15,11 @@
 
 #define TASKNUMBER 3
 
+//in miliseconds
+#define DDELAY 50    //reading delay to avoid jumping between button states
+#define LDELAY 500   //Long press delays
+
+#define RPMSTEP 100
 
 //Shared variables
 volatile unsigned int RPM;                   // real rpm variable
@@ -56,6 +61,9 @@ void TaskSerialPrinter(void *pvParameters);
 
 TaskHandle_t xHandle = NULL;
 
+//define functions
+unsigned short readButtonSM(unsigned short int *state, int button, unsigned long *timer, byte *lastRead);
+
 // the setup function runs once when you press reset or power the board
 void setup() {
 
@@ -79,7 +87,7 @@ void setup() {
   OCR1B = 0;                                        //Register to compare for cycle
 
   //Set up Timer2 for DAC with fast PWM
-  pinMode(DACPWM,OUTPUT);
+  pinMode(DACPWM, OUTPUT);
   //reset registers
   TCCR2A = 0;
   TCCR2B = 0;
@@ -89,7 +97,7 @@ void setup() {
   TCCR2A = _BV(COM2A1) | _BV(WGM21) | _BV(WGM20);
   TCCR2B = _BV(CS20);
   OCR2A = 0;
-  
+
 
   // set up tacho sensor interrupt IRQ1 on pin3
   attachInterrupt(digitalPinToInterrupt(TAC), tacho, FALLING);
@@ -134,6 +142,54 @@ void loop()
   // Empty. Things are done in Tasks.
 }
 
+
+unsigned short readButtonSM(unsigned short *state, int button, unsigned long *timer, byte *lastRead) {
+
+  unsigned long ltimer;
+  byte reading;
+
+
+  ltimer = millis();
+
+  //Filter bouncing erros to avoid bjumping erroneously and quickly through the state machine
+  if ((ltimer - *timer <= DDELAY)) {
+    reading = *lastRead;
+  } else {
+    reading = digitalRead(button);
+    if (reading != *lastRead){
+      *timer = ltimer;
+      *lastRead = reading;
+    }
+  }
+
+  
+
+
+  switch (*state) {
+    case 0: if (!reading) {
+        *state = 1;
+      }
+      break;
+    case 1: if (reading) {
+        *state = 0;
+      } else {
+        *state = 2;
+      }
+      break;
+    case 2: if (reading) *state = 0;
+      else if (ltimer - *timer > LDELAY){
+        *state = 1;
+        *timer = ltimer;
+      }
+      break;
+    default:
+      *state = 0;
+      break;
+  }
+  return *state;
+
+}
+
 /*--------------------------------------------------*/
 /*---------------------- Tasks ---------------------*/
 /*--------------------------------------------------*/
@@ -152,50 +208,26 @@ void TaskButtonReader(void *pvParameters)
 
   byte lastStateUp = HIGH;
   byte lastStateDown = HIGH;
-  byte StateUp = HIGH;
-  byte StateDown = HIGH;
+  unsigned short StateUp = 0;
+  unsigned short StateDown = 0;
 
-  unsigned long timeoutUp = 0;
-  unsigned long timeoutDown = 0;
-  unsigned long debounceUp = 0;
-  unsigned long debounceDown = 0;
+  unsigned long timerUp=0;
+  unsigned long timerDown=0;
 
   int reading;
   long tempRPM;                   //desiredRPM is a shared variable so we need something to store
   //it so we can modify freely locally and at the end modify desiredRPM
-  unsigned long timer;
 
   for (;;) {
-    debugDAC(uxTaskPriorityGet(NULL),1);
+    debugDAC(uxTaskPriorityGet(NULL), 1);
+    
     tempRPM = 0;
-    timer = millis();
 
-    reading = digitalRead(UP); // read the state of the switch into a local variable:
-    if (reading != lastStateUp) {  // If the switch changed, due to noise or pressing
-      debounceUp = timer;     // reset the debouncing timer
-    }
-    else if ((timer - debounceUp) > debounceDelay) {
-      if (timer - timeoutUp > 500) {
-        if (reading == LOW)tempRPM += 100;
-        timeoutUp = timer;
-        StateUp = reading;
-      }
-    }
-    lastStateUp = reading;
-
-
-    reading = digitalRead(DOWN); // read the state of the switch into a local variable:
-    if (reading != lastStateDown) {  // If the switch changed, due to noise or pressing
-      debounceDown = timer;     // reset the debouncing timer
-    }
-    else if ((timer - debounceDown) > debounceDelay) {
-      if (timer - timeoutDown > 500) {
-        if (reading == LOW)tempRPM -= 100; //Avoid overflow 
-        timeoutDown = timer;
-        StateDown = reading;
-      }
-    }
-    lastStateDown = reading;
+    reading =  readButtonSM(&StateUp, UP, &timerUp, &lastStateUp);
+    if(reading == 1) tempRPM += RPMSTEP;
+    
+    reading =  readButtonSM(&StateDown, DOWN, &timerDown, &lastStateDown);
+    if(reading == 1) tempRPM -= RPMSTEP;
 
     //Make adjustments to tempRPM to avoid getting out of bounds. the min rpm thing might be kinda useless
     tempRPM += desiredRPM;
@@ -213,7 +245,7 @@ void TaskButtonReader(void *pvParameters)
     } else if (!tempRPM) runflag = 0 ;
 
     desiredRPM = tempRPM;
-    debugDAC(uxTaskPriorityGet(NULL),0);
+    debugDAC(uxTaskPriorityGet(NULL), 0);
     vTaskDelay(4);
   }
 
@@ -230,7 +262,7 @@ void TaskUpdatePID(void *pvParameters) {
 
   unsigned int cycle = 0;
 
-  //Setup PID 
+  //Setup PID
   PID myPID(&Input, &Output, &Setpoint, sKp, sKi, sKd, DIRECT);
   myPID.SetMode(AUTOMATIC);
   myPID.SetOutputLimits(minoutputlimit, maxoutputlimit);
@@ -241,7 +273,7 @@ void TaskUpdatePID(void *pvParameters) {
   Setpoint = 20;
 
   for (;;) {
-    debugDAC(uxTaskPriorityGet(NULL),1);
+    debugDAC(uxTaskPriorityGet(NULL), 1);
     localSlow = loopflag;
     localRun = runflag;
 
@@ -274,8 +306,8 @@ void TaskUpdatePID(void *pvParameters) {
     else cycle = 0;
 
     OCR1B = cycle;
-    debugDAC(uxTaskPriorityGet(NULL),0);
-    vTaskDelay(4);
+    debugDAC(uxTaskPriorityGet(NULL), 0);
+    vTaskDelay(2);
   }
 
 
@@ -289,7 +321,7 @@ void TaskSerialPrinter(void *pvParameters) {
   UBaseType_t uxHighWaterMark;
   uxHighWaterMark = uxTaskGetStackHighWaterMark( xHandle );
   for (;;) {
-    debugDAC(uxTaskPriorityGet(NULL),1);
+    debugDAC(uxTaskPriorityGet(NULL), 1);
     timer = millis();
     Serial.print(timer);
     Serial.print("\ndesiredRPM:");
@@ -297,36 +329,36 @@ void TaskSerialPrinter(void *pvParameters) {
     Serial.print("\nCycle:");
     Serial.print(OCR1B);
     Serial.print("\n");
-    debugDAC(uxTaskPriorityGet(NULL),0);
-    vTaskDelay( 20 );
+    debugDAC(uxTaskPriorityGet(NULL), 0);
+    vTaskDelay( 500/portTICK_PERIOD_MS );
   }
 
 }
 
 //My very simple try at having a task tracer. to use with 22uF capacitor, 3.3kOhm resistor, pin 11, osciloscope
-void debugDAC(int i,int state){
+void debugDAC(int i, int state) {
 
-    static unsigned int values[TASKNUMBER];
+  static unsigned int values[TASKNUMBER];
 
-    if (semDAC != NULL){
-      if(xSemaphoreTake(semDAC,(TickType_t) 2) == pdTRUE){
-        
-        //update TASK state in array
-        values[i] = state;
+  if (semDAC != NULL) {
+    if (xSemaphoreTake(semDAC, (TickType_t) 2) == pdTRUE) {
 
-        //Update PWM output 
-        for (i=0; i<TASKNUMBER ; i++){
-          if(values[i] != 0){
-            OCR2A = (256/TASKNUMBER) * i;
-            break;
-          }
+      //update TASK state in array
+      values[i] = state;
+
+      //Update PWM output
+      for (i = 0; i < TASKNUMBER ; i++) {
+        if (values[i] != 0) {
+          OCR2A = (256 / TASKNUMBER) * i;
+          break;
         }
-        if (i == TASKNUMBER) OCR2A = 0;
-        xSemaphoreGive(semDAC);
-      }      
+      }
+      if (i == TASKNUMBER) OCR2A = 0;
+      xSemaphoreGive(semDAC);
     }
-    
-  
+  }
+
+
 }
 
 void tacho() {
