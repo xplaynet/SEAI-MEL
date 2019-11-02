@@ -9,8 +9,9 @@
 
 #define DACPWM 11
 #define PWM 10 //OC1B
-#define UP 5
-#define DOWN 4
+#define UP 14
+#define DOWN 17
+#define TAC 3
 
 #define TASKNUMBER 3
 
@@ -91,7 +92,7 @@ void setup() {
   
 
   // set up tacho sensor interrupt IRQ1 on pin3
-  attachInterrupt(1, tacho, FALLING);
+  attachInterrupt(digitalPinToInterrupt(TAC), tacho, FALLING);
 
   // initialize serial communication at 9600 bits per second:
   Serial.begin(115200);
