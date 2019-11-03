@@ -41,9 +41,9 @@ Para a segunda vantagem, visto ser possível separar as diferentes funcionalides
 Foi escolhido como o microcontrolador a usar no sistema devido à sua versatibilidade, disponibilade de documentação online e experiência com o mesmo em projectos anteriores.
 
 #### PHOTOTRANSISTOR OPTOCOUPLER 6N136
-Este elemento foi usado pois necessitamos de separar electricamente o arduino do resto do circuito de drive ao motor de alta tensão.
-O 6N136 foi escolhido em especifico pelo seu baixo preço, disponibilidade nos laboratórios da feup e por permitir uma resolução de 2% duty-cycle para ondas PWM 20Khz.
-Mais barato que o circuito integrado escolhido, e disponivel nos laboratórios, só o 4N33, mas devido aos seus elevados temps de transição de estado não é possível usá-lo neste projecto.
+Este elemento foi usado pois necessitamos de separar electricamente o arduino do resto do circuito de drive do motor que é de alta tensão, em relação à tensão de funcinamento do arduino. Esta medida protege o arduino e também, mais importante, o operador.
+O 6N136 foi escolhido em especifico pelo seu baixo preço, disponibilidade nos laboratórios da feup e por permitir uma resolução de 2% duty-cycle para ondas PWM 20Khz, que consideramos suficiente.
+Mais barato que o circuito integrado escolhido, e disponivel nos laboratórios, só o 4N33. Mas devido aos seus elevados tempos de transição de estados não é possível usar neste projecto.
  
 
 ### Esquemática

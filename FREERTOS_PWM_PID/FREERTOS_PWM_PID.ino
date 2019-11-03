@@ -6,6 +6,7 @@
 //#include <LiquidCrystal_I2C.h>
 //#include <Rotary.h>
 #include <PID_v1.h>
+#include <EEPROM.h>
 
 #define DACPWM 11
 #define PWM 10 //OC1B
@@ -14,12 +15,17 @@
 #define TAC 3
 
 #define TASKNUMBER 3
+#define PROGSIZE 30
 
 //in miliseconds
 #define DDELAY 50    //reading delay to avoid jumping between button states
 #define LDELAY 500   //Long press delays
 
 #define RPMSTEP 100
+
+//For automated control writing to EPPROM
+#define STARTADDRESS 2
+#define SIGNATURE 0xFACC
 
 //Shared variables
 volatile unsigned int RPM;                   // real rpm variable
@@ -29,6 +35,10 @@ volatile bool loopflag = false;              // flag for soft start
 volatile bool runflag = false;               // flag for motor running state
 
 SemaphoreHandle_t semDAC = NULL;
+
+unsigned int progRecord[PROGSIZE][2];
+volatile unsigned int progCursor = 0;
+
 
 unsigned int count;                 // tacho pulses count variable
 unsigned int lastcount = 0;         // additional tacho pulses count variable
@@ -60,6 +70,16 @@ void TaskUpdatePID(void *pvParameters);
 void TaskSerialPrinter(void *pvParameters);
 
 TaskHandle_t xHandle = NULL;
+
+//To use for message passing between ButtonTask and create program Task
+struct progSlice
+{
+  unsigned int desiredRPM;
+  unsigned int cycle;
+};
+
+QueueHandle_t progQueue;
+
 
 //define functions
 unsigned short readButtonSM(unsigned short int *state, int button, unsigned long *timer, byte *lastRead);
@@ -109,6 +129,7 @@ void setup() {
     ; // wait for serial port to connect. Needed for native USB, on LEONARDO, MICRO, YUN, and other 32u4 based boards.
   }
 
+  progQueue = xQueueCreate(15, sizeof(struct progSlice));
   semDAC = xSemaphoreCreateMutex();
 
   xTaskCreate(
@@ -142,6 +163,20 @@ void loop()
   // Empty. Things are done in Tasks.
 }
 
+void EEPROMWrite16(unsigned int address, unsigned int value) {
+  EEPROM.write(address, (value >> 8) & 0xFF);
+  EEPROM.write(address + 1, value & 0xFF);
+}
+
+unsigned int EEPROMRead16(unsigned int address) {
+  unsigned int x;
+  x = EEPROM.read(address);
+  x = (x << 8);
+  x |= EEPROM.read(address + 1) & 0xFF;
+
+  return x;
+}
+
 
 unsigned short readButtonSM(unsigned short *state, int button, unsigned long *timer, byte *lastRead) {
 
@@ -151,20 +186,18 @@ unsigned short readButtonSM(unsigned short *state, int button, unsigned long *ti
 
   ltimer = millis();
 
-  //Filter bouncing erros to avoid bjumping erroneously and quickly through the state machine
+  //Filter bouncing erros to avoid jumping erroneously and quickly through the state machine
   if ((ltimer - *timer <= DDELAY)) {
     reading = *lastRead;
   } else {
     reading = digitalRead(button);
-    if (reading != *lastRead){
+    if (reading != *lastRead) {
       *timer = ltimer;
       *lastRead = reading;
     }
   }
 
-  
-
-
+  //State machine to process input
   switch (*state) {
     case 0: if (!reading) {
         *state = 1;
@@ -177,7 +210,7 @@ unsigned short readButtonSM(unsigned short *state, int button, unsigned long *ti
       }
       break;
     case 2: if (reading) *state = 0;
-      else if (ltimer - *timer > LDELAY){
+      else if (ltimer - *timer > LDELAY) {
         *state = 1;
         *timer = ltimer;
       }
@@ -206,13 +239,16 @@ void TaskButtonReader(void *pvParameters)
     It includes code to deal with bouncing inputs and deals with long presses.
   */
 
+  struct progSlice progTemp;
+
   byte lastStateUp = HIGH;
   byte lastStateDown = HIGH;
   unsigned short StateUp = 0;
   unsigned short StateDown = 0;
+  unsigned short tempState = 0;
 
-  unsigned long timerUp=0;
-  unsigned long timerDown=0;
+  unsigned long timerUp = 0;
+  unsigned long timerDown = 0;
 
   int reading;
   long tempRPM;                   //desiredRPM is a shared variable so we need something to store
@@ -220,14 +256,42 @@ void TaskButtonReader(void *pvParameters)
 
   for (;;) {
     debugDAC(uxTaskPriorityGet(NULL), 1);
-    
+
     tempRPM = 0;
 
+
+  
+    //Once a button is beeing pressed the other is ignored
+    if (StateUp == 0) {
+      tempState = StateDown;
+      reading =  readButtonSM(&StateDown, DOWN, &timerDown, &lastStateDown);
+      if (reading != 0) {
+        if (reading == 1) {
+          tempRPM -= RPMSTEP;                         //on state/reading == 1 update desiredRPM
+          if (tempState == 0) progTemp.cycle = OCR1B; //if this is a new button press prepare progTemp to send
+        }
+      } else if (tempState != 0) {
+        progTemp.desiredRPM = desiredRPM;                 //if the button was just unpressed update progTemp
+        xQueueSend(progQueue, (void *)&progTemp, (TickType_t) 2);  //Then put in the Queue for another Task to process it
+      }
+
+    }
+
+    if(StateDown == 0){
+    tempState = StateUp;
     reading =  readButtonSM(&StateUp, UP, &timerUp, &lastStateUp);
-    if(reading == 1) tempRPM += RPMSTEP;
-    
-    reading =  readButtonSM(&StateDown, DOWN, &timerDown, &lastStateDown);
-    if(reading == 1) tempRPM -= RPMSTEP;
+    if (reading != 0) {
+        if (reading == 1) {
+          tempRPM += RPMSTEP;                         //on state/reading == 1 update desiredRPM
+          if (tempState == 0) progTemp.cycle = OCR1B; //if this is a new button press prepare progTemp to send
+        }
+      } else if (tempState != 0) {
+        progTemp.desiredRPM = desiredRPM;                 //if the button was just unpressed update progTemp
+        xQueueSend(progQueue, (void *)&progTemp, (TickType_t) 2);  //Then put in the Queue for another Task to process it
+      }
+
+    }
+
 
     //Make adjustments to tempRPM to avoid getting out of bounds. the min rpm thing might be kinda useless
     tempRPM += desiredRPM;
@@ -317,6 +381,7 @@ void TaskSerialPrinter(void *pvParameters) {
 
   (void) pvParameters;
 
+  struct progSlice progTemp;
   unsigned long timer;
   UBaseType_t uxHighWaterMark;
   uxHighWaterMark = uxTaskGetStackHighWaterMark( xHandle );
@@ -329,8 +394,15 @@ void TaskSerialPrinter(void *pvParameters) {
     Serial.print("\nCycle:");
     Serial.print(OCR1B);
     Serial.print("\n");
+    if( xQueueReceive(progQueue, &(progTemp), (TickType_t) 0)){
+      Serial.print(progTemp.desiredRPM);
+      Serial.print("|");
+      Serial.print(progTemp.cycle);
+      Serial.print("\n");
+    }
+    
     debugDAC(uxTaskPriorityGet(NULL), 0);
-    vTaskDelay( 500/portTICK_PERIOD_MS );
+    vTaskDelay( 2000 / portTICK_PERIOD_MS );
   }
 
 }
@@ -349,7 +421,7 @@ void debugDAC(int i, int state) {
       //Update PWM output
       for (i = 0; i < TASKNUMBER ; i++) {
         if (values[i] != 0) {
-          OCR2A = (256 / TASKNUMBER) * i;
+          OCR2A = (256 / TASKNUMBER) * (i + 1);
           break;
         }
       }
@@ -363,9 +435,9 @@ void debugDAC(int i, int state) {
 
 void tacho() {
   count++;
-  unsigned long time = micros() - lastflash;
-  float time_in_sec  = ((float)time) / 1000000;
+  unsigned long timer = micros() - lastflash;
+  float time_in_sec  = ((float)timer) / 1000000;
   float prerpm = 60 / time_in_sec;
   RPM = prerpm;
-  lastflash = micros();
+  lastflash = timer;
 }

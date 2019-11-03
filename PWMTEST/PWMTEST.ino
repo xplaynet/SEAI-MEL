@@ -1,3 +1,19 @@
+#include <EEPROM.h>
+
+void EEPROMWrite16(unsigned int address, unsigned int value){
+  EEPROM.write(address,(value >> 8)&0xFF);
+  EEPROM.write(address+1,value & 0xFF);
+}
+
+unsigned int EEPROMRead16(unsigned int address){
+  unsigned int x;
+  x = EEPROM.read(address);
+  x = (x<<8);
+  x |= EEPROM.read(address+1) & 0xFF;
+
+  return x;
+}
+
 void setup() {
   pinMode(7, INPUT);
   digitalWrite(7, HIGH);
@@ -12,6 +28,19 @@ void setup() {
   OCR1B = 0;
 
   Serial.begin(57600);
+
+
+
+  unsigned int i = 547;
+  unsigned int x = 0;
+
+  EEPROMwrite16(0,i);
+  x = EEPROMRead16(0);
+
+  Serial.print("value: ");
+  Serial.print(x);
+  Serial.print("\n");
+  
 
 
 
