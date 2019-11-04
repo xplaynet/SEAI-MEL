@@ -77,7 +77,7 @@ void tacho();
 void TaskButtonReader(void *pvParameters);
 void TaskUpdatePID(void *pvParameters);
 void TaskSerialPrinter(void *pvParameters);
-
+void TaskCreateProgram(void *pvParameters);
 TaskHandle_t xHandle = NULL;
 
 //To use for message passing between ButtonTask and create program Task
@@ -147,15 +147,15 @@ void setup() {
     ,  164  // This stack size can be checked & adjusted by reading the Stack Highwater
     ,  NULL
     ,  1  // Priority, with 3 (configMAX_PRIORITIES - 1) being the highest, and 0 being the lowest.
-    ,  &xHandle );
-
-  xTaskCreate(
-    TaskSerialPrinter
-    ,  (const portCHAR *)"SerialPrinter"   // A name just for humans
-    ,  128  // This stack size can be checked & adjusted by reading the Stack Highwater
-    ,  NULL
-    ,  0  // Priority, with 3 (configMAX_PRIORITIES - 1) being the highest, and 0 being the lowest.
     ,  NULL );
+
+//  xTaskCreate(
+//    TaskSerialPrinter
+//    ,  (const portCHAR *)"SerialPrinter"   // A name just for humans
+//    ,  128  // This stack size can be checked & adjusted by reading the Stack Highwater
+//    ,  NULL
+//    ,  0  // Priority, with 3 (configMAX_PRIORITIES - 1) being the highest, and 0 being the lowest.
+//    ,  NULL );
 
   xTaskCreate(
     TaskUpdatePID
@@ -164,6 +164,14 @@ void setup() {
     ,  NULL
     ,  2  // Priority, with 3 (configMAX_PRIORITIES - 1) being the highest, and 0 being the lowest.
     ,  NULL );
+
+    xTaskCreate(
+    TaskCreateProgram
+    ,  (const portCHAR *)"PIDcontrol"   // A name just for humans
+    ,  128  // This stack size can be checked & adjusted by reading the Stack Highwater
+    ,  NULL
+    ,  0  // Priority, with 3 (configMAX_PRIORITIES - 1) being the highest, and 0 being the lowest.
+    ,  &xHandle );
   // Now the task scheduler, which takes over control of scheduling individual tasks, is automatically started.
 }
 
@@ -279,22 +287,18 @@ void TaskButtonReader(void *pvParameters)
     if (StateUp == START) {
       readButtonSM(&StateDown, DOWN, &timerDown, &lastStateDown);
       if (StateDown & 0x01) tempRPM -= RPMSTEP;                   //Update RPM on new button press or periodically when button is held
-      if (StateDown == NEWPRESS) progTemp.cycle = OCR1B;          //On new press, update progTemp with current duty-cycle
-      else if (StateDown == UNPRESSED) {
-        progTemp.desiredRPM = desiredRPM;                          //if the button was just unpressed update progTemp with new RPM
-        xQueueSend(progQueue, (void *)&progTemp, (TickType_t) 2);  //Then put in the Queue for another Task to process it
-      }
     }
 
     //Same thing as the other button but for increasing RPM
     if (StateDown == START) {
-      readButtonSM(&StateUp, DOWN, &timerUp, &lastStateUp);
+      readButtonSM(&StateUp, UP, &timerUp, &lastStateUp);
       if (StateUp & 0x01) tempRPM += RPMSTEP;
-      if (StateUp == NEWPRESS) progTemp.cycle = OCR1B;
-      else if (StateUp == UNPRESSED) {
-        progTemp.desiredRPM = desiredRPM;
-        xQueueSend(progQueue, (void *)&progTemp, (TickType_t) 2);
-      }
+    }
+    if (StateDown == NEWPRESS || StateUp == NEWPRESS) progTemp.cycle = OCR1B;   //On new press, update progTemp with current duty-cycle
+    if (StateUp == UNPRESSED || StateDown == UNPRESSED) {
+      progTemp.desiredRPM = desiredRPM;                                       //if the button was just unpressed update progTemp with new RPM
+      xQueueSend(progQueue, (void *)&progTemp, (TickType_t) 2);               //Then put in the Queue for another Task to process it
+      vTaskResume(xHandle);
     }
 
 
@@ -317,6 +321,77 @@ void TaskButtonReader(void *pvParameters)
     debugDAC(uxTaskPriorityGet(NULL), 0);
     vTaskDelay(4);
   }
+
+}
+
+void TaskCreateProgram( void *pvParameters) {
+
+  (void) pvParameters;
+
+  unsigned int address = 0;
+  unsigned int lowerRPM = 0;
+  unsigned int previousRPM = 0;
+
+  unsigned short state = 0;
+
+  struct progSlice progTemp;
+
+  for (;;) {
+    vTaskSuspend(NULL);
+    if ( xQueueReceive(progQueue, &(progTemp), (TickType_t) 0)) {
+      if (progTemp.desiredRPM == 0) state = 3;
+      else {
+        switch (state) {
+          case 0: if (progTemp.desiredRPM < previousRPM) state = 1;
+            break;
+
+          case 1: if (progTemp.desiredRPM > previousRPM) state = 2;
+            break;
+
+          case 2: if (progTemp.desiredRPM < previousRPM) state = 1;
+            else if (progTemp.desiredRPM > previousRPM) state = 0;
+            break;
+
+          default: state = 4;
+        }
+      }
+
+
+      if (state == 0) {
+        address++;
+        previousRPM = progTemp.desiredRPM;
+        //WRITE TO EEPROM
+        //WHILE IN TEST DO PRINTS
+        Serial.print("\nAdd slice");
+        Serial.print("\ndesired RPM: "); Serial.print(previousRPM); Serial.print("\t cycle: "); Serial.print(progTemp.cycle);
+      }
+      else if (state == 1) {
+        Serial.print("\nHELD");
+        previousRPM = progTemp.desiredRPM;
+      }
+      else if (state == 2) {
+        Serial.print("\nReplace Slice");
+        Serial.print("\ndesired RPM: "); Serial.print(previousRPM);
+
+        address++;
+        previousRPM = progTemp.desiredRPM;
+        Serial.print("\nAdd slice");
+        Serial.print("\ndesired RPM: "); Serial.print(previousRPM); Serial.print("\t cycle: "); Serial.print(progTemp.cycle);
+      }
+
+      else if (state == 3) {
+        Serial.print("\nFinishing");
+      }
+      else  Serial.print("\nStill Alive");
+    }
+
+
+
+
+
+
+  }
+
 
 }
 void TaskUpdatePID(void *pvParameters) {
@@ -379,9 +454,9 @@ void TaskUpdatePID(void *pvParameters) {
     vTaskDelay(2);
   }
 
-
-
 }
+
+
 void TaskSerialPrinter(void *pvParameters) {
 
   (void) pvParameters;
@@ -391,6 +466,7 @@ void TaskSerialPrinter(void *pvParameters) {
   UBaseType_t uxHighWaterMark;
   uxHighWaterMark = uxTaskGetStackHighWaterMark( xHandle );
   for (;;) {
+    vTaskSuspend(NULL);
     debugDAC(uxTaskPriorityGet(NULL), 1);
     timer = millis();
     Serial.print(timer);
@@ -409,10 +485,9 @@ void TaskSerialPrinter(void *pvParameters) {
     debugDAC(uxTaskPriorityGet(NULL), 0);
     vTaskDelay( 2000 / portTICK_PERIOD_MS );
   }
-
 }
 
-//My very simple try at having a task tracer. to use with 22uF capacitor, 3.3kOhm resistor, pin 11, osciloscope
+//My very simple try at having a task tracer. to use with 22uF capacitor, 3.3kOhm resistor op amp low pass filter, pin 11, osciloscope
 void debugDAC(int i, int state) {
 
   static unsigned int values[TASKNUMBER];
