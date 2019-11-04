@@ -15,7 +15,7 @@
 #define TAC 3
 
 #define TASKNUMBER 3
-#define PROGSIZE 30
+#define PROGSIZE 10
 
 //in miliseconds
 #define DDELAY 50    //reading delay to avoid jumping between button states
@@ -45,8 +45,8 @@ volatile bool runflag = false;               // flag for motor running state
 
 SemaphoreHandle_t semDAC = NULL;
 
-unsigned int progRecord[PROGSIZE][2];
-volatile unsigned int progCursor = 0;
+
+
 
 
 unsigned int count;                 // tacho pulses count variable
@@ -79,7 +79,7 @@ void TaskUpdatePID(void *pvParameters);
 void TaskSerialPrinter(void *pvParameters);
 void TaskCreateProgram(void *pvParameters);
 TaskHandle_t xHandle = NULL;
-
+TaskHandle_t xHandle2 = NULL;
 //To use for message passing between ButtonTask and create program Task
 struct progSlice
 {
@@ -144,31 +144,31 @@ void setup() {
   xTaskCreate(
     TaskButtonReader
     ,  (const portCHAR *)"BReader"   // A name just for humans
-    ,  164  // This stack size can be checked & adjusted by reading the Stack Highwater
+    ,  100  // This stack size can be checked & adjusted by reading the Stack Highwater
     ,  NULL
     ,  1  // Priority, with 3 (configMAX_PRIORITIES - 1) being the highest, and 0 being the lowest.
-    ,  NULL );
+    ,  &xHandle2 );
 
-//  xTaskCreate(
-//    TaskSerialPrinter
-//    ,  (const portCHAR *)"SerialPrinter"   // A name just for humans
-//    ,  128  // This stack size can be checked & adjusted by reading the Stack Highwater
-//    ,  NULL
-//    ,  0  // Priority, with 3 (configMAX_PRIORITIES - 1) being the highest, and 0 being the lowest.
-//    ,  NULL );
+  //  xTaskCreate(
+  //    TaskSerialPrinter
+  //    ,  (const portCHAR *)"SerialP"   // A name just for humans
+  //    ,  128  // This stack size can be checked & adjusted by reading the Stack Highwater
+  //    ,  NULL
+  //    ,  0  // Priority, with 3 (configMAX_PRIORITIES - 1) being the highest, and 0 being the lowest.
+  //    ,  NULL );
 
   xTaskCreate(
     TaskUpdatePID
-    ,  (const portCHAR *)"PIDcontrol"   // A name just for humans
-    ,  256  // This stack size can be checked & adjusted by reading the Stack Highwater
+    ,  (const portCHAR *)"PIDctrl"   // A name just for humans
+    ,  120  // This stack size can be checked & adjusted by reading the Stack Highwater
     ,  NULL
     ,  2  // Priority, with 3 (configMAX_PRIORITIES - 1) being the highest, and 0 being the lowest.
     ,  NULL );
 
-    xTaskCreate(
+  xTaskCreate(
     TaskCreateProgram
-    ,  (const portCHAR *)"PIDcontrol"   // A name just for humans
-    ,  128  // This stack size can be checked & adjusted by reading the Stack Highwater
+    ,  (const portCHAR *)"pmake"   // A name just for humans
+    ,  200  // This stack size can be checked & adjusted by reading the Stack Highwater
     ,  NULL
     ,  0  // Priority, with 3 (configMAX_PRIORITIES - 1) being the highest, and 0 being the lowest.
     ,  &xHandle );
@@ -331,9 +331,10 @@ void TaskCreateProgram( void *pvParameters) {
   unsigned int address = 0;
   unsigned int lowerRPM = 0;
   unsigned int previousRPM = 0;
+  unsigned int tempCycle=0;
 
   unsigned short state = 0;
-
+  unsigned int progRecord[PROGSIZE][2];
   struct progSlice progTemp;
 
   for (;;) {
@@ -355,32 +356,53 @@ void TaskCreateProgram( void *pvParameters) {
           default: state = 4;
         }
       }
-
-
+      UBaseType_t uxHighWaterMark;
+      uxHighWaterMark = uxTaskGetStackHighWaterMark( NULL );
+      Serial.print(uxHighWaterMark);
       if (state == 0) {
         address++;
+        tempCycle=0;
         previousRPM = progTemp.desiredRPM;
         //WRITE TO EEPROM
         //WHILE IN TEST DO PRINTS
-        Serial.print("\nAdd slice");
+        //Serial.print("\nAdd slice");
         Serial.print("\ndesired RPM: "); Serial.print(previousRPM); Serial.print("\t cycle: "); Serial.print(progTemp.cycle);
+        progRecord[address - 1][0] = progTemp.desiredRPM;
+        progRecord[address - 1][1] = progTemp.cycle;
+
       }
       else if (state == 1) {
-        Serial.print("\nHELD");
+        Serial.print("\nHELD");Serial.print(progTemp.cycle);
+        if(!tempCycle) tempCycle = progTemp.cycle;
         previousRPM = progTemp.desiredRPM;
       }
       else if (state == 2) {
-        Serial.print("\nReplace Slice");
+        //Serial.print("\nReplace Slice");
         Serial.print("\ndesired RPM: "); Serial.print(previousRPM);
-
+        progRecord[address - 1][0] = previousRPM;
         address++;
         previousRPM = progTemp.desiredRPM;
-        Serial.print("\nAdd slice");
+        progRecord[address - 1][0] = progTemp.desiredRPM;
+        progRecord[address - 1][1] = progTemp.cycle;
+
+        //Serial.print("\nAdd slice");
         Serial.print("\ndesired RPM: "); Serial.print(previousRPM); Serial.print("\t cycle: "); Serial.print(progTemp.cycle);
       }
 
       else if (state == 3) {
+        address++;
+        progRecord[address - 1][0] = progTemp.desiredRPM;
+        if(tempCycle) progRecord[address - 1][1] = tempCycle;
+        else progRecord[address - 1][1] = progTemp.cycle;
         Serial.print("\nFinishing");
+        for (int i = 0; i < PROGSIZE; i++) {
+          Serial.print("\nn: "); Serial.print(i); Serial.print("\nsetRPM: "); Serial.print(progRecord[i][0]); Serial.print("\t cycle: "); Serial.print(progRecord[i][1]);
+          if (progRecord[i][0] == 0) {
+            break;
+          }
+        }
+
+
       }
       else  Serial.print("\nStill Alive");
     }
