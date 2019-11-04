@@ -27,6 +27,15 @@
 #define STARTADDRESS 2
 #define SIGNATURE 0xFACC
 
+//Button states
+#define START 0
+#define NEWPRESS 1
+#define HOLD 2
+#define PRESS 3
+#define UNPRESSED 4
+
+
+
 //Shared variables
 volatile unsigned int RPM;                   // real rpm variable
 volatile unsigned int desiredRPM = 0;        //RPM selected by operator
@@ -82,7 +91,7 @@ QueueHandle_t progQueue;
 
 
 //define functions
-unsigned short readButtonSM(unsigned short int *state, int button, unsigned long *timer, byte *lastRead);
+void readButtonSM(unsigned short int *state, int button, unsigned long *timer, byte *lastRead);
 
 // the setup function runs once when you press reset or power the board
 void setup() {
@@ -178,7 +187,7 @@ unsigned int EEPROMRead16(unsigned int address) {
 }
 
 
-unsigned short readButtonSM(unsigned short *state, int button, unsigned long *timer, byte *lastRead) {
+void readButtonSM(unsigned short *state, int button, unsigned long *timer, byte *lastRead) {
 
   unsigned long ltimer;
   byte reading;
@@ -199,27 +208,32 @@ unsigned short readButtonSM(unsigned short *state, int button, unsigned long *ti
 
   //State machine to process input
   switch (*state) {
-    case 0: if (!reading) {
-        *state = 1;
-      }
+    case START: if (!reading) *state = NEWPRESS;
       break;
-    case 1: if (reading) {
-        *state = 0;
-      } else {
-        *state = 2;
-      }
+
+    case NEWPRESS: if (reading) *state = UNPRESSED;
+      else *state = HOLD;
       break;
-    case 2: if (reading) *state = 0;
+
+    case 2: if (reading) *state = UNPRESSED;
       else if (ltimer - *timer > LDELAY) {
-        *state = 1;
+        *state = PRESS;
         *timer = ltimer;
       }
       break;
+
+    case 3: if (reading)  *state = UNPRESSED;
+      else  *state = HOLD;
+      break;
+
+    case 4: if (!reading) *state = NEWPRESS;
+      else *state = START;
+      break;
+
     default:
-      *state = 0;
+      *state = START;
       break;
   }
-  return *state;
 
 }
 
@@ -245,12 +259,12 @@ void TaskButtonReader(void *pvParameters)
   byte lastStateDown = HIGH;
   unsigned short StateUp = 0;
   unsigned short StateDown = 0;
-  unsigned short tempState = 0;
+
 
   unsigned long timerUp = 0;
   unsigned long timerDown = 0;
 
-  int reading;
+
   long tempRPM;                   //desiredRPM is a shared variable so we need something to store
   //it so we can modify freely locally and at the end modify desiredRPM
 
@@ -260,36 +274,27 @@ void TaskButtonReader(void *pvParameters)
     tempRPM = 0;
 
 
-  
+
     //Once a button is beeing pressed the other is ignored
-    if (StateUp == 0) {
-      tempState = StateDown;
-      reading =  readButtonSM(&StateDown, DOWN, &timerDown, &lastStateDown);
-      if (reading != 0) {
-        if (reading == 1) {
-          tempRPM -= RPMSTEP;                         //on state/reading == 1 update desiredRPM
-          if (tempState == 0) progTemp.cycle = OCR1B; //if this is a new button press prepare progTemp to send
-        }
-      } else if (tempState != 0) {
-        progTemp.desiredRPM = desiredRPM;                 //if the button was just unpressed update progTemp
+    if (StateUp == START) {
+      readButtonSM(&StateDown, DOWN, &timerDown, &lastStateDown);
+      if (StateDown & 0x01) tempRPM -= RPMSTEP;                   //Update RPM on new button press or periodically when button is held
+      if (StateDown == NEWPRESS) progTemp.cycle = OCR1B;          //On new press, update progTemp with current duty-cycle
+      else if (StateDown == UNPRESSED) {
+        progTemp.desiredRPM = desiredRPM;                          //if the button was just unpressed update progTemp with new RPM
         xQueueSend(progQueue, (void *)&progTemp, (TickType_t) 2);  //Then put in the Queue for another Task to process it
       }
-
     }
 
-    if(StateDown == 0){
-    tempState = StateUp;
-    reading =  readButtonSM(&StateUp, UP, &timerUp, &lastStateUp);
-    if (reading != 0) {
-        if (reading == 1) {
-          tempRPM += RPMSTEP;                         //on state/reading == 1 update desiredRPM
-          if (tempState == 0) progTemp.cycle = OCR1B; //if this is a new button press prepare progTemp to send
-        }
-      } else if (tempState != 0) {
-        progTemp.desiredRPM = desiredRPM;                 //if the button was just unpressed update progTemp
-        xQueueSend(progQueue, (void *)&progTemp, (TickType_t) 2);  //Then put in the Queue for another Task to process it
+    //Same thing as the other button but for increasing RPM
+    if (StateDown == START) {
+      readButtonSM(&StateUp, DOWN, &timerUp, &lastStateUp);
+      if (StateUp & 0x01) tempRPM += RPMSTEP;
+      if (StateUp == NEWPRESS) progTemp.cycle = OCR1B;
+      else if (StateUp == UNPRESSED) {
+        progTemp.desiredRPM = desiredRPM;
+        xQueueSend(progQueue, (void *)&progTemp, (TickType_t) 2);
       }
-
     }
 
 
@@ -394,13 +399,13 @@ void TaskSerialPrinter(void *pvParameters) {
     Serial.print("\nCycle:");
     Serial.print(OCR1B);
     Serial.print("\n");
-    if( xQueueReceive(progQueue, &(progTemp), (TickType_t) 0)){
+    if ( xQueueReceive(progQueue, &(progTemp), (TickType_t) 0)) {
       Serial.print(progTemp.desiredRPM);
       Serial.print("|");
       Serial.print(progTemp.cycle);
       Serial.print("\n");
     }
-    
+
     debugDAC(uxTaskPriorityGet(NULL), 0);
     vTaskDelay( 2000 / portTICK_PERIOD_MS );
   }
