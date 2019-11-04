@@ -28,11 +28,17 @@
 #define SIGNATURE 0xFACC
 
 //Button states
-#define START 0
-#define NEWPRESS 1
-#define HOLD 2
-#define PRESS 3
+#define START     0
+#define NEWPRESS  1
+#define HOLD      2
+#define PRESS     3
 #define UNPRESSED 4
+
+//Program record states
+#define NEWSTEP     0
+#define HOLDSTEP    1
+#define CORRECTSTEP 2
+#define ENDSTEP     3
 
 
 
@@ -50,25 +56,21 @@ SemaphoreHandle_t semDAC = NULL;
 
 
 unsigned int count;                 // tacho pulses count variable
-unsigned int lastcount = 0;         // additional tacho pulses count variable
+
 unsigned long lastcounttime = 0;
 unsigned long lastflash;
 unsigned long lastpiddelay = 0;
-unsigned long previousMillis = 0;
-unsigned long lastDebounceTime = 0;
-unsigned long lastDebounceTime2 = 0;
-unsigned long timeout1 = 0;
-unsigned long timeout2 = 0;
 
-const int sampleRate = 1;           // Variable that determines how fast our PID loop
+
+const int sampleRate = 1;           // Variable that determines how fast our PID loop | Task delays already take care of that so we can set this no minimum
 const int debounceDelay = 50;       // the debounce time; increase if the output flickers
 
 //PWM duty-cycle. 400 -> 100%
 //These variable are also shared but READ-ONLY so there is no concurrency problems
 const int minoutputlimit = 50;      // limit of PID output
 const int maxoutputlimit = 400;     // limit of PID output
-const int minrpm = 300;           // min RPM of the range 1
-const int maxrpm = 5000;          // max RPM of the range 1
+const int minrpm = 300;             // min RPM
+const int maxrpm = 5000;            // max RPM
 
 //define function to count RPM on interrupt
 void tacho();
@@ -78,8 +80,11 @@ void TaskButtonReader(void *pvParameters);
 void TaskUpdatePID(void *pvParameters);
 void TaskSerialPrinter(void *pvParameters);
 void TaskCreateProgram(void *pvParameters);
+
+//Handles for intertask things.
 TaskHandle_t xHandle = NULL;
 TaskHandle_t xHandle2 = NULL;
+
 //To use for message passing between ButtonTask and create program Task
 struct progSlice
 {
@@ -98,8 +103,8 @@ void setup() {
 
   pinMode(UP, INPUT);               // Increase RPM
   pinMode(DOWN, INPUT);             // Decrease RPM
-  digitalWrite(UP, HIGH);           // turn on pullup resistors
-  digitalWrite(DOWN, HIGH);         // turn on pullup resistors
+  digitalWrite(UP, HIGH);           // turn on pullup resistor
+  digitalWrite(DOWN, HIGH);         // turn on pullup resistor
 
 
   // set up Timer1 Phase and Frequency Correct PWM Mode
@@ -131,7 +136,7 @@ void setup() {
   // set up tacho sensor interrupt IRQ1 on pin3
   attachInterrupt(digitalPinToInterrupt(TAC), tacho, FALLING);
 
-  // initialize serial communication at 9600 bits per second:
+  // initialize serial communication at x bits per second:
   Serial.begin(115200);
 
   while (!Serial) {
@@ -147,7 +152,7 @@ void setup() {
     ,  100  // This stack size can be checked & adjusted by reading the Stack Highwater
     ,  NULL
     ,  1  // Priority, with 3 (configMAX_PRIORITIES - 1) being the highest, and 0 being the lowest.
-    ,  &xHandle2 );
+    ,  NULL );
 
   //  xTaskCreate(
   //    TaskSerialPrinter
@@ -160,10 +165,10 @@ void setup() {
   xTaskCreate(
     TaskUpdatePID
     ,  (const portCHAR *)"PIDctrl"   // A name just for humans
-    ,  120  // This stack size can be checked & adjusted by reading the Stack Highwater
+    ,  90  // This stack size can be checked & adjusted by reading the Stack Highwater
     ,  NULL
     ,  2  // Priority, with 3 (configMAX_PRIORITIES - 1) being the highest, and 0 being the lowest.
-    ,  NULL );
+    ,  &xHandle2 );
 
   xTaskCreate(
     TaskCreateProgram
@@ -180,13 +185,16 @@ void loop()
   // Empty. Things are done in Tasks.
 }
 
+//Helper functions to write and read 2byte(16bit) variables. Each EEPROM cell only stores 1byte
 void EEPROMWrite16(unsigned int address, unsigned int value) {
+  address += address;
   EEPROM.write(address, (value >> 8) & 0xFF);
   EEPROM.write(address + 1, value & 0xFF);
 }
 
 unsigned int EEPROMRead16(unsigned int address) {
   unsigned int x;
+  address += address;
   x = EEPROM.read(address);
   x = (x << 8);
   x |= EEPROM.read(address + 1) & 0xFF;
@@ -194,7 +202,7 @@ unsigned int EEPROMRead16(unsigned int address) {
   return x;
 }
 
-
+//State machine used for reading simple push buttons. state is used as function output.
 void readButtonSM(unsigned short *state, int button, unsigned long *timer, byte *lastRead) {
 
   unsigned long ltimer;
@@ -298,7 +306,7 @@ void TaskButtonReader(void *pvParameters)
     if (StateUp == UNPRESSED || StateDown == UNPRESSED) {
       progTemp.desiredRPM = desiredRPM;                                       //if the button was just unpressed update progTemp with new RPM
       xQueueSend(progQueue, (void *)&progTemp, (TickType_t) 2);               //Then put in the Queue for another Task to process it
-      vTaskResume(xHandle);
+      vTaskResume(xHandle);                                                   //Wake up task to do it
     }
 
 
@@ -328,10 +336,10 @@ void TaskCreateProgram( void *pvParameters) {
 
   (void) pvParameters;
 
-  unsigned int address = 0;
-  unsigned int lowerRPM = 0;
-  unsigned int previousRPM = 0;
-  unsigned int tempCycle=0;
+  unsigned int address = 0;                     //Keep track of address beeing written
+  unsigned int previousRPM = 0;                 //save previousRPM
+  unsigned int tempCycle = 0;                   //Keep Cycle when decresing RPM in case the machine is ending its work
+  unsigned int i;
 
   unsigned short state = 0;
   unsigned int progRecord[PROGSIZE][2];
@@ -339,45 +347,49 @@ void TaskCreateProgram( void *pvParameters) {
 
   for (;;) {
     vTaskSuspend(NULL);
+    debugDAC(uxTaskPriorityGet(NULL), 1);
     if ( xQueueReceive(progQueue, &(progTemp), (TickType_t) 0)) {
-      if (progTemp.desiredRPM == 0) state = 3;
+      if (progTemp.desiredRPM == 0) state = ENDSTEP;
       else {
         switch (state) {
-          case 0: if (progTemp.desiredRPM < previousRPM) state = 1;
+          case NEWSTEP: if (progTemp.desiredRPM < previousRPM) state = HOLDSTEP;
             break;
 
-          case 1: if (progTemp.desiredRPM > previousRPM) state = 2;
+          case 1: if (progTemp.desiredRPM > previousRPM) state = CORRECTSTEP;
             break;
 
-          case 2: if (progTemp.desiredRPM < previousRPM) state = 1;
-            else if (progTemp.desiredRPM > previousRPM) state = 0;
+          case 2: if (progTemp.desiredRPM < previousRPM) state = HOLDSTEP;
+            else if (progTemp.desiredRPM > previousRPM) state = NEWSTEP;
             break;
 
           default: state = 4;
         }
       }
+
+      //This should be used to figure out, when debugging, the stack amount that should be made available to tasks
       UBaseType_t uxHighWaterMark;
-      uxHighWaterMark = uxTaskGetStackHighWaterMark( NULL );
+      uxHighWaterMark = uxTaskGetStackHighWaterMark( xHandle2 );
       Serial.print(uxHighWaterMark);
-      if (state == 0) {
+
+      //Add new step to program
+      if (state == NEWSTEP) {
         address++;
-        tempCycle=0;
+        tempCycle = 0;
         previousRPM = progTemp.desiredRPM;
         //WRITE TO EEPROM
         //WHILE IN TEST DO PRINTS
-        //Serial.print("\nAdd slice");
         Serial.print("\ndesired RPM: "); Serial.print(previousRPM); Serial.print("\t cycle: "); Serial.print(progTemp.cycle);
         progRecord[address - 1][0] = progTemp.desiredRPM;
         progRecord[address - 1][1] = progTemp.cycle;
-
       }
-      else if (state == 1) {
-        Serial.print("\nHELD");Serial.print(progTemp.cycle);
-        if(!tempCycle) tempCycle = progTemp.cycle;
+      //When speed is decreased keep some information.
+      else if (state == HOLDSTEP) {
+        Serial.print("\nHELD"); Serial.print(progTemp.cycle);
+        if (!tempCycle) tempCycle = progTemp.cycle;
         previousRPM = progTemp.desiredRPM;
       }
-      else if (state == 2) {
-        //Serial.print("\nReplace Slice");
+      //if after speed is decreased there is an increase, correct previous RPM value in program. It is assumed the operator overshot the desired value.
+      else if (state == CORRECTSTEP) {
         Serial.print("\ndesired RPM: "); Serial.print(previousRPM);
         progRecord[address - 1][0] = previousRPM;
         address++;
@@ -385,17 +397,19 @@ void TaskCreateProgram( void *pvParameters) {
         progRecord[address - 1][0] = progTemp.desiredRPM;
         progRecord[address - 1][1] = progTemp.cycle;
 
-        //Serial.print("\nAdd slice");
         Serial.print("\ndesired RPM: "); Serial.print(previousRPM); Serial.print("\t cycle: "); Serial.print(progTemp.cycle);
       }
 
-      else if (state == 3) {
+      //desired RPM has hit 0 so the work is done
+      //Finish writing the program to EEPROM and use signture to let other taks know there is a program loaded
+      //Program persists after resets
+      else if (state == ENDSTEP) {
         address++;
         progRecord[address - 1][0] = progTemp.desiredRPM;
-        if(tempCycle) progRecord[address - 1][1] = tempCycle;
+        if (tempCycle) progRecord[address - 1][1] = tempCycle;
         else progRecord[address - 1][1] = progTemp.cycle;
         Serial.print("\nFinishing");
-        for (int i = 0; i < PROGSIZE; i++) {
+        for (i = 0; i < PROGSIZE; i++) {
           Serial.print("\nn: "); Serial.print(i); Serial.print("\nsetRPM: "); Serial.print(progRecord[i][0]); Serial.print("\t cycle: "); Serial.print(progRecord[i][1]);
           if (progRecord[i][0] == 0) {
             break;
@@ -411,7 +425,7 @@ void TaskCreateProgram( void *pvParameters) {
 
 
 
-
+    debugDAC(uxTaskPriorityGet(NULL), 0);
   }
 
 
@@ -467,9 +481,10 @@ void TaskUpdatePID(void *pvParameters) {
       Setpoint = desiredRPM;
       myPID.Compute();
       //dimming = map(Output, minoutputlimit, maxoutputlimit, maxoutputlimit, minoutputlimit); // reverse the output
-      cycle = constrain(Output, minoutputlimit, maxoutputlimit);     // check that dimming is in 20-625 range
+      cycle = constrain(Output, minoutputlimit, maxoutputlimit);     // check that dimming is in range
     }
     else cycle = 0;
+    //Might need some work done here
 
     OCR1B = cycle;
     debugDAC(uxTaskPriorityGet(NULL), 0);
@@ -497,12 +512,12 @@ void TaskSerialPrinter(void *pvParameters) {
     Serial.print("\nCycle:");
     Serial.print(OCR1B);
     Serial.print("\n");
-    if ( xQueueReceive(progQueue, &(progTemp), (TickType_t) 0)) {
-      Serial.print(progTemp.desiredRPM);
-      Serial.print("|");
-      Serial.print(progTemp.cycle);
-      Serial.print("\n");
-    }
+//    if ( xQueueReceive(progQueue, &(progTemp), (TickType_t) 0)) {
+//      Serial.print(progTemp.desiredRPM);
+//      Serial.print("|");
+//      Serial.print(progTemp.cycle);
+//      Serial.print("\n");
+//    }
 
     debugDAC(uxTaskPriorityGet(NULL), 0);
     vTaskDelay( 2000 / portTICK_PERIOD_MS );
