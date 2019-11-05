@@ -8,6 +8,8 @@
 #include <PID_v1.h>
 #include <EEPROM.h>
 
+#define DEV 1
+
 #define DACPWM 11
 #define PWM 10 //OC1B
 #define UP 14
@@ -51,7 +53,7 @@ volatile bool runflag = false;               // flag for motor running state
 
 SemaphoreHandle_t semDAC = NULL;
 
-
+unsigned int progRecord[PROGSIZE * 2];
 
 
 
@@ -187,12 +189,25 @@ void loop()
 
 //Helper functions to write and read 2byte(16bit) variables. Each EEPROM cell only stores 1byte
 void EEPROMWrite16(unsigned int address, unsigned int value) {
+
+#ifdef DEV
+  progRecord[address]=value;
+  Serial.print("DEV");
+#endif
+#ifndef DEV
   address += address;
   EEPROM.write(address, (value >> 8) & 0xFF);
   EEPROM.write(address + 1, value & 0xFF);
+#endif
 }
 
 unsigned int EEPROMRead16(unsigned int address) {
+#ifdef DEV
+  Serial.print("DEVR");
+  return progRecord[address];
+
+#endif
+#ifndef DEV
   unsigned int x;
   address += address;
   x = EEPROM.read(address);
@@ -200,6 +215,7 @@ unsigned int EEPROMRead16(unsigned int address) {
   x |= EEPROM.read(address + 1) & 0xFF;
 
   return x;
+#endif
 }
 
 //State machine used for reading simple push buttons. state is used as function output.
@@ -336,19 +352,19 @@ void TaskCreateProgram( void *pvParameters) {
 
   (void) pvParameters;
 
-  unsigned int address = 0;                     //Keep track of address beeing written
+  unsigned int address = 1;                     //Keep track of address beeing written
   unsigned int previousRPM = 0;                 //save previousRPM
   unsigned int tempCycle = 0;                   //Keep Cycle when decresing RPM in case the machine is ending its work
   unsigned int i;
 
   unsigned short state = 0;
-  unsigned int progRecord[PROGSIZE][2];
   struct progSlice progTemp;
 
   for (;;) {
     vTaskSuspend(NULL);
     debugDAC(uxTaskPriorityGet(NULL), 1);
     if ( xQueueReceive(progQueue, &(progTemp), (TickType_t) 0)) {
+      if (previousRPM == progTemp.desiredRPM) continue; //Check there was an actuall change to the RPM
       if (progTemp.desiredRPM == 0) state = ENDSTEP;
       else {
         switch (state) {
@@ -373,14 +389,14 @@ void TaskCreateProgram( void *pvParameters) {
 
       //Add new step to program
       if (state == NEWSTEP) {
-        address++;
         tempCycle = 0;
         previousRPM = progTemp.desiredRPM;
         //WRITE TO EEPROM
         //WHILE IN TEST DO PRINTS
         Serial.print("\ndesired RPM: "); Serial.print(previousRPM); Serial.print("\t cycle: "); Serial.print(progTemp.cycle);
-        progRecord[address - 1][0] = progTemp.desiredRPM;
-        progRecord[address - 1][1] = progTemp.cycle;
+        EEPROMWrite16(address, progTemp.desiredRPM);
+        EEPROMWrite16(address + 1, progTemp.cycle);
+        address += 2;
       }
       //When speed is decreased keep some information.
       else if (state == HOLDSTEP) {
@@ -391,11 +407,11 @@ void TaskCreateProgram( void *pvParameters) {
       //if after speed is decreased there is an increase, correct previous RPM value in program. It is assumed the operator overshot the desired value.
       else if (state == CORRECTSTEP) {
         Serial.print("\ndesired RPM: "); Serial.print(previousRPM);
-        progRecord[address - 1][0] = previousRPM;
-        address++;
+        EEPROMWrite16(address - 2, previousRPM);
         previousRPM = progTemp.desiredRPM;
-        progRecord[address - 1][0] = progTemp.desiredRPM;
-        progRecord[address - 1][1] = progTemp.cycle;
+        EEPROMWrite16(address, progTemp.desiredRPM);
+        EEPROMWrite16(address + 1, progTemp.cycle);
+        address += 2;
 
         Serial.print("\ndesired RPM: "); Serial.print(previousRPM); Serial.print("\t cycle: "); Serial.print(progTemp.cycle);
       }
@@ -404,14 +420,15 @@ void TaskCreateProgram( void *pvParameters) {
       //Finish writing the program to EEPROM and use signture to let other taks know there is a program loaded
       //Program persists after resets
       else if (state == ENDSTEP) {
-        address++;
-        progRecord[address - 1][0] = progTemp.desiredRPM;
-        if (tempCycle) progRecord[address - 1][1] = tempCycle;
-        else progRecord[address - 1][1] = progTemp.cycle;
+        EEPROMWrite16(address, progTemp.desiredRPM);
+        if (tempCycle) EEPROMWrite16(address + 1, tempCycle);
+        else EEPROMWrite16(address + 1, progTemp.cycle);
         Serial.print("\nFinishing");
-        for (i = 0; i < PROGSIZE; i++) {
-          Serial.print("\nn: "); Serial.print(i); Serial.print("\nsetRPM: "); Serial.print(progRecord[i][0]); Serial.print("\t cycle: "); Serial.print(progRecord[i][1]);
-          if (progRecord[i][0] == 0) {
+        EEPROMWrite16(0, SIGNATURE);
+        Serial.print("\n"); Serial.print(EEPROMRead16(0));
+        for (i = 1; i < PROGSIZE * 2; i += 2) {
+          Serial.print("\nn: "); Serial.print(i - 1); Serial.print("\nsetRPM: "); Serial.print(EEPROMRead16(i)); Serial.print("\t cycle: "); Serial.print(EEPROMRead16(i + 1));
+          if (EEPROMRead16(i) == 0 ) {
             break;
           }
         }
@@ -512,12 +529,12 @@ void TaskSerialPrinter(void *pvParameters) {
     Serial.print("\nCycle:");
     Serial.print(OCR1B);
     Serial.print("\n");
-//    if ( xQueueReceive(progQueue, &(progTemp), (TickType_t) 0)) {
-//      Serial.print(progTemp.desiredRPM);
-//      Serial.print("|");
-//      Serial.print(progTemp.cycle);
-//      Serial.print("\n");
-//    }
+    //    if ( xQueueReceive(progQueue, &(progTemp), (TickType_t) 0)) {
+    //      Serial.print(progTemp.desiredRPM);
+    //      Serial.print("|");
+    //      Serial.print(progTemp.cycle);
+    //      Serial.print("\n");
+    //    }
 
     debugDAC(uxTaskPriorityGet(NULL), 0);
     vTaskDelay( 2000 / portTICK_PERIOD_MS );
