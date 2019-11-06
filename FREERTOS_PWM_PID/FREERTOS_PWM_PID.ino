@@ -168,7 +168,7 @@ void setup() {
   xTaskCreate(
     TaskButtonReader
     ,  (const portCHAR *)"BReader"   // A name just for humans
-    ,  150  // This stack size can be checked & adjusted by reading the Stack Highwater
+    ,  80  // This stack size can be checked & adjusted by reading the Stack Highwater
     ,  NULL
     ,  1  // Priority, with 3 (configMAX_PRIORITIES - 1) being the highest, and 0 being the lowest.
     ,  &Handle_Button );
@@ -184,7 +184,7 @@ void setup() {
   xTaskCreate(
     TaskUpdatePID
     ,  (const portCHAR *)"PIDctrl"   // A name just for humans
-    ,  110  // This stack size can be checked & adjusted by reading the Stack Highwater
+    ,  90  // This stack size can be checked & adjusted by reading the Stack Highwater
     ,  NULL
     ,  2  // Priority, with 3 (configMAX_PRIORITIES - 1) being the highest, and 0 being the lowest.
     ,  &Handle_PID );
@@ -524,8 +524,8 @@ void TaskProgramButton(void *pvParameters) {
       count = 0;
     }
     UBaseType_t uxHighWaterMark;
-    uxHighWaterMark = uxTaskGetStackHighWaterMark( Handle_PID);
-    Serial.print(OCR1B); Serial.print("\nRPM"); Serial.print(RPM);Serial.print("\nDROM"); Serial.print(desiredRPM);
+    uxHighWaterMark = uxTaskGetStackHighWaterMark( NULL);
+    Serial.print(uxHighWaterMark); Serial.print("\nRPM"); Serial.print(RPM);Serial.print("\nDROM"); Serial.print(desiredRPM);
     Serial.print("\n");
     vTaskDelay(5);
   }
@@ -550,7 +550,6 @@ void TaskRunProgram(void *pvParameters) {
 
   unsigned int readCycle = 0;
 
-  vTaskSuspend(NULL);
   for (;;) {
 
 
@@ -559,14 +558,16 @@ void TaskRunProgram(void *pvParameters) {
 
 
       //On Task launch/ Wait for program button to start task. Detect if program ended and wait here again
-      if (Crpm = 0) {
+      if (Crpm == 0) {
         RunF = false;
         vTaskSuspend( NULL );
         address = 1;
-        Crpm = EEPROMRead16(address);
-        Ccycle = EEPROMRead16(address + 1);
+        
       }
 
+
+      Crpm = EEPROMRead16(address);
+      Ccycle = EEPROMRead16(address + 1);
       //Initiate locks for RPM and Cycle check
       rpmlock = true;
       cyclelock = true;
@@ -586,7 +587,10 @@ void TaskRunProgram(void *pvParameters) {
     //Wait for system to reach target RPM and then wait a bit to try and stabilize
     if (RPM >= Crpm && rpmlock ) {
       if (!rpmTimer) rpmTimer = millis();
-      else if (millis() - rpmTimer > RPM_DELAY_AUTO) rpmlock = false;
+      else if (millis() - rpmTimer > RPM_DELAY_AUTO){
+        rpmlock = false;
+        Serial.print("\nunlocked rpm\n");
+      }
     }
 
 
@@ -600,7 +604,10 @@ void TaskRunProgram(void *pvParameters) {
       }
       if (readCycle <= Ccycle || (millis() - cycleTimeout) > AUTOTIMEOUT) {
         if (!cycleTimer) cycleTimer = millis();
-        else if ( (millis() - cycleTimer) > CYCLE_DELAY_AUTO) cyclelock = false;
+        else if ( (millis() - cycleTimer) > CYCLE_DELAY_AUTO){
+          Serial.print("\nunl cycle\n");
+          cyclelock = false;
+        }
       }
     }
     vTaskDelay(6);
