@@ -50,7 +50,7 @@
 
 
 //Shared variables
-volatile unsigned int RPM;                   // real rpm variable
+volatile unsigned long RPM = 0;                 // real rpm variable
 volatile unsigned int desiredRPM = 0;        //RPM selected by operator
 
 volatile bool loopflag = false;              // flag for soft start
@@ -62,7 +62,7 @@ unsigned int progRecord[PROGSIZE * 2];
 
 
 
-unsigned int count;                 // tacho pulses count variable
+volatile unsigned int count;                 // tacho pulses count variable
 
 unsigned long lastcounttime = 0;
 unsigned long lastflash;
@@ -91,10 +91,13 @@ void TaskRunProgram(void *pvParameters);
 
 //Handles for intertask things.
 TaskHandle_t xHandle = NULL;
-TaskHandle_t xHandle2 = NULL;
 TaskHandle_t Handle_Create = NULL;
 TaskHandle_t Handle_Run = NULL;
-volatile bool CreateF= false;
+TaskHandle_t Handle_PID = NULL;
+TaskHandle_t Handle_Button = NULL;
+
+
+volatile bool CreateF = false;
 volatile bool RunF = false;
 //To use for message passing between ButtonTask and create program Task
 struct progSlice
@@ -142,7 +145,7 @@ void setup() {
   //freqPWM = ??? it's lower than 62 500. I just changed CS bits to lower the frequency but didn't bother checking the prescaler because it doesn't matter.
   TCCR2A = _BV(COM2A1) | _BV(WGM21) | _BV(WGM20);
   TCCR2B = _BV(CS20) | _BV(CS21);
-  OCR2A = 0;
+  OCR2A = 1;
 
 
   // set up tacho sensor interrupt IRQ1 on pin3
@@ -168,15 +171,15 @@ void setup() {
     ,  150  // This stack size can be checked & adjusted by reading the Stack Highwater
     ,  NULL
     ,  1  // Priority, with 3 (configMAX_PRIORITIES - 1) being the highest, and 0 being the lowest.
-    ,  &xHandle2 );
-    Serial.print(1);
-//    xTaskCreate(
-//      TaskSerialPrinter
-//      ,  (const portCHAR *)"SerialP"   // A name just for humans
-//      ,  128  // This stack size can be checked & adjusted by reading the Stack Highwater
-//      ,  NULL
-//      ,  0  // Priority, with 3 (configMAX_PRIORITIES - 1) being the highest, and 0 being the lowest.
-//      ,  NULL );
+    ,  &Handle_Button );
+  Serial.print(1);
+  //    xTaskCreate(
+  //      TaskSerialPrinter
+  //      ,  (const portCHAR *)"SerialP"   // A name just for humans
+  //      ,  128  // This stack size can be checked & adjusted by reading the Stack Highwater
+  //      ,  NULL
+  //      ,  0  // Priority, with 3 (configMAX_PRIORITIES - 1) being the highest, and 0 being the lowest.
+  //      ,  NULL );
 
   xTaskCreate(
     TaskUpdatePID
@@ -184,8 +187,8 @@ void setup() {
     ,  110  // This stack size can be checked & adjusted by reading the Stack Highwater
     ,  NULL
     ,  2  // Priority, with 3 (configMAX_PRIORITIES - 1) being the highest, and 0 being the lowest.
-    ,  NULL );
-Serial.print(2);
+    ,  &Handle_PID );
+  Serial.print(2);
   xTaskCreate(
     TaskProgramButton
     ,  (const portCHAR *)"PButton"   // A name just for humans
@@ -193,24 +196,24 @@ Serial.print(2);
     ,  NULL
     ,  1  // Priority, with 3 (configMAX_PRIORITIES - 1) being the highest, and 0 being the lowest.
     ,  NULL );
-Serial.print(3);
-    xTaskCreate(
-      TaskCreateProgram
-      ,  (const portCHAR *)"PMAKE"   // A name just for humans
-      ,  110  // This stack size can be checked & adjusted by reading the Stack Highwater
-      ,  NULL
-      ,  0  // Priority, with 3 (configMAX_PRIORITIES - 1) being the highest, and 0 being the lowest.
-      ,  &Handle_Create );
-  
+  Serial.print(3);
+  xTaskCreate(
+    TaskCreateProgram
+    ,  (const portCHAR *)"PMAKE"   // A name just for humans
+    ,  110  // This stack size can be checked & adjusted by reading the Stack Highwater
+    ,  NULL
+    ,  0  // Priority, with 3 (configMAX_PRIORITIES - 1) being the highest, and 0 being the lowest.
+    ,  &Handle_Create );
+
   Serial.print(4);
-    xTaskCreate(
-      TaskRunProgram
-      ,  (const portCHAR *)"PRUN"   // A name just for humans
-      ,  70  // This stack size can be checked & adjusted by reading the Stack Highwater
-      ,  NULL
-      ,  1  // Priority, with 3 (configMAX_PRIORITIES - 1) being the highest, and 0 being the lowest.
-      ,  &Handle_Run );
-Serial.print(5);
+  xTaskCreate(
+    TaskRunProgram
+    ,  (const portCHAR *)"PRUN"   // A name just for humans
+    ,  70  // This stack size can be checked & adjusted by reading the Stack Highwater
+    ,  NULL
+    ,  1  // Priority, with 3 (configMAX_PRIORITIES - 1) being the highest, and 0 being the lowest.
+    ,  &Handle_Run );
+  Serial.print(5);
   // Now the task scheduler, which takes over control of scheduling individual tasks, is automatically started.
 }
 
@@ -333,7 +336,7 @@ void TaskButtonReader(void *pvParameters)
   //it so we can modify freely locally and at the end modify desiredRPM
 
   for (;;) {
-    debugDAC(uxTaskPriorityGet(NULL), 1);
+    //debugDAC(uxTaskPriorityGet(NULL), 1);
 
     tempRPM = 0;
 
@@ -360,7 +363,7 @@ void TaskButtonReader(void *pvParameters)
     }
 
     if (tempRPM != 0) {
-      if(RunF)vTaskSuspend(Handle_Run);
+      if (RunF)vTaskSuspend(Handle_Run);
       //Make adjustments to tempRPM to avoid getting out of bounds. the min rpm thing might be kinda useless
       tempRPM += desiredRPM;
       if (tempRPM > maxrpm) tempRPM = maxrpm;
@@ -368,17 +371,11 @@ void TaskButtonReader(void *pvParameters)
       else if (tempRPM == 200) tempRPM = 0;
       else if (tempRPM < 0) tempRPM = 0;
 
-      //Set flags for PID, maybe separate task when automated control is added
-      if (tempRPM > 0) {
-        if (!runflag) {
-          if (RPM < minrpm)loopflag = true; //If cold starting set slow start. Cold starting is defined if motor is below minimum RPM
-          runflag = true;
-        }
-      } else if (!tempRPM) runflag = 0 ;
+
 
       desiredRPM = tempRPM;
     }
-    debugDAC(uxTaskPriorityGet(NULL), 0);
+    //debugDAC(uxTaskPriorityGet(NULL), 0);
     vTaskDelay(4);
   }
 
@@ -399,10 +396,10 @@ void TaskCreateProgram( void *pvParameters) {
 
   vTaskSuspend(NULL);
   EEPROMWrite16(0, 0);
-  
+
   for (;;) {
     vTaskSuspend(NULL);
-    debugDAC(uxTaskPriorityGet(NULL), 1);
+    //debugDAC(uxTaskPriorityGet(NULL), 1);
     if ( xQueueReceive(progQueue, &(progTemp), (TickType_t) 0)) {
       if (previousRPM == progTemp.desiredRPM) continue; //Check there was an actuall change to the RPM
       if (progTemp.desiredRPM == 0) state = ENDSTEP;
@@ -470,7 +467,7 @@ void TaskCreateProgram( void *pvParameters) {
             break;
           }
         }
-        CreateF=false;
+        CreateF = false;
         vTaskSuspend(NULL);
         EEPROMWrite16(0, 0);
       }
@@ -481,7 +478,7 @@ void TaskCreateProgram( void *pvParameters) {
 
 
 
-    debugDAC(uxTaskPriorityGet(NULL), 0);
+    //debugDAC(uxTaskPriorityGet(NULL), 0);
   }
 
 
@@ -513,7 +510,7 @@ void TaskProgramButton(void *pvParameters) {
           Serial.print("\nRun\n");
           //Delete Create Task in case it exists in waiting
           vTaskResume(Handle_Run);
-          if (!RunF) RunF=true;   
+          if (!RunF) RunF = true;
         }
       } else {
         //Launch Task to create a program on long press. The system should be Idle to start this task
@@ -521,16 +518,16 @@ void TaskProgramButton(void *pvParameters) {
           Serial.print("\nCreate\n");
           vTaskResume(Handle_Create);
           CreateF = true;
-          
-        } 
+
+        }
       }
       count = 0;
     }
     UBaseType_t uxHighWaterMark;
-    uxHighWaterMark = uxTaskGetStackHighWaterMark( Handle_Create);
-    Serial.print(uxHighWaterMark);
+    uxHighWaterMark = uxTaskGetStackHighWaterMark( Handle_PID);
+    Serial.print(OCR1B); Serial.print("\nRPM"); Serial.print(RPM);Serial.print("\nDROM"); Serial.print(desiredRPM);
     Serial.print("\n");
-    vTaskDelay(4);
+    vTaskDelay(5);
   }
 }
 
@@ -561,11 +558,11 @@ void TaskRunProgram(void *pvParameters) {
     if (!rpmlock && !cyclelock) {
 
 
-      //On Task launch/ Wait for program button to start task. Detect if program ended and wait here again 
+      //On Task launch/ Wait for program button to start task. Detect if program ended and wait here again
       if (Crpm = 0) {
         RunF = false;
         vTaskSuspend( NULL );
-        address=1;
+        address = 1;
         Crpm = EEPROMRead16(address);
         Ccycle = EEPROMRead16(address + 1);
       }
@@ -577,7 +574,7 @@ void TaskRunProgram(void *pvParameters) {
       //Update desiredRPM
       desiredRPM = Crpm;
 
-      
+
 
       //Setup things for detecting the stuff
       rpmTimer = 0;
@@ -617,9 +614,11 @@ void TaskUpdatePID(void *pvParameters) {
   double sKp = 0.1, sKi = 0.2, sKd = 0; // PID tuning parameters for starting motor
   double rKp = 0.25, rKi = 1, rKd = 0;  // PID tuning parameters for runnig motor
 
-  bool localSlow, localRun;
+  bool localSlow = false;
+  bool localRun = false;
 
   unsigned int cycle = 0;
+  unsigned int localCount = 0;
 
   //Setup PID
   PID myPID(&Input, &Output, &Setpoint, sKp, sKi, sKd, DIRECT);
@@ -630,11 +629,31 @@ void TaskUpdatePID(void *pvParameters) {
   //Initialize things
   Input = 20;
   Setpoint = 20;
+  unsigned long timeru = 0;
+  float time_in_sec = 0;
+
 
   for (;;) {
-    debugDAC(uxTaskPriorityGet(NULL), 1);
-    localSlow = loopflag;
-    localRun = runflag;
+    //debugDAC(uxTaskPriorityGet(NULL), 1);
+
+
+    Input = (micros() - timeru);
+    time_in_sec = Input / 1000000;
+    Input = (float)(count - localCount) / time_in_sec;
+    RPM = Input;
+
+    timeru = micros();
+    localCount = count;
+    Setpoint = desiredRPM;
+    
+
+    //Set flags for PID, maybe separate task when automated control is added
+    if (Setpoint > 0) {
+      if (!localRun) {
+        if (Input < minrpm)localSlow = true; //If cold starting set slow start. Cold starting is defined if motor is below minimum RPM
+        localRun = true;
+      }
+    } else if (!Input) localRun = false ;
 
     if (localRun) {
       //soft start
@@ -656,8 +675,6 @@ void TaskUpdatePID(void *pvParameters) {
           lastpiddelay = millis();
         }
       }
-      Input = RPM;
-      Setpoint = desiredRPM;
       myPID.Compute();
       //dimming = map(Output, minoutputlimit, maxoutputlimit, maxoutputlimit, minoutputlimit); // reverse the output
       cycle = constrain(Output, minoutputlimit, maxoutputlimit);     // check that dimming is in range
@@ -666,8 +683,9 @@ void TaskUpdatePID(void *pvParameters) {
     //Might need some work done here
 
     OCR1B = cycle;
-    debugDAC(uxTaskPriorityGet(NULL), 0);
-    vTaskDelay(4);
+    //debugDAC(uxTaskPriorityGet(NULL), 0);
+    //Serial.print(RPM);Serial.print("\n");
+    vTaskDelay(1);
   }
 
 }
@@ -683,7 +701,7 @@ void TaskSerialPrinter(void *pvParameters) {
   uxHighWaterMark = uxTaskGetStackHighWaterMark( xHandle );
   for (;;) {
     vTaskSuspend(NULL);
-    debugDAC(uxTaskPriorityGet(NULL), 1);
+    //debugDAC(uxTaskPriorityGet(NULL), 1);
     timer = millis();
     Serial.print(timer);
     Serial.print("\ndesiredRPM: ");
@@ -698,42 +716,42 @@ void TaskSerialPrinter(void *pvParameters) {
     //      Serial.print("\n");
     //    }
 
-    debugDAC(uxTaskPriorityGet(NULL), 0);
+    //debugDAC(uxTaskPriorityGet(NULL), 0);
     vTaskDelay( 2000 / portTICK_PERIOD_MS );
   }
 }
 
 //My very simple try at having a task tracer. to use with 22uF capacitor, 3.3kOhm resistor op amp low pass filter, pin 11, osciloscope
-void debugDAC(int i, int state) {
-
-  static unsigned int values[TASKNUMBER];
-
-  if (semDAC != NULL) {
-    if (xSemaphoreTake(semDAC, (TickType_t) 2) == pdTRUE) {
-
-      //update TASK state in array
-      values[i] = state;
-
-      //Update PWM output
-      for (i = 0; i < TASKNUMBER ; i++) {
-        if (values[i] != 0) {
-          OCR2A = (256 / TASKNUMBER) * (i + 1);
-          break;
-        }
-      }
-      if (i == TASKNUMBER) OCR2A = 0;
-      xSemaphoreGive(semDAC);
-    }
-  }
-
-
-}
+//void debugDAC(int i, int state) {
+//
+//  static unsigned int values[TASKNUMBER];
+//
+//  if (semDAC != NULL) {
+//    if (xSemaphoreTake(semDAC, (TickType_t) 2) == pdTRUE) {
+//
+//      //update TASK state in array
+//      values[i] = state;
+//
+//      //Update PWM output
+//      for (i = 0; i < TASKNUMBER ; i++) {
+//        if (values[i] != 0) {
+//          OCR2A = (256 / TASKNUMBER) * (i + 1);
+//          break;
+//        }
+//      }
+//      if (i == TASKNUMBER) OCR2A = 0;
+//      xSemaphoreGive(semDAC);
+//    }
+//  }
+//
+//
+//}
 
 void tacho() {
-  count++;
-  unsigned long timer = micros() - lastflash;
-  float time_in_sec  = ((float)timer) / 1000000;
-  float prerpm = 60 / time_in_sec;
-  RPM = prerpm;
-  lastflash = timer;
+  count += 1;
+  //  unsigned long timer = micros() - lastflash;
+  //  float time_in_sec  = ((float)timer) / 1000000;
+  //  float prerpm = 60 / time_in_sec;
+  //  RPM = prerpm;
+  //  lastflash = timer;
 }
