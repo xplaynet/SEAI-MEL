@@ -7,7 +7,6 @@
 //#include <Rotary.h>
 #include <PID_v1.h>
 #include <EEPROM.h>
-#include <timers.h>
 
 #define DEV 1
 
@@ -95,6 +94,8 @@ TaskHandle_t xHandle = NULL;
 TaskHandle_t xHandle2 = NULL;
 TaskHandle_t Handle_Create = NULL;
 TaskHandle_t Handle_Run = NULL;
+volatile bool CreateF= false;
+volatile bool RunF = false;
 //To use for message passing between ButtonTask and create program Task
 struct progSlice
 {
@@ -168,14 +169,14 @@ void setup() {
     ,  NULL
     ,  1  // Priority, with 3 (configMAX_PRIORITIES - 1) being the highest, and 0 being the lowest.
     ,  &xHandle2 );
-
-  //  xTaskCreate(
-  //    TaskSerialPrinter
-  //    ,  (const portCHAR *)"SerialP"   // A name just for humans
-  //    ,  128  // This stack size can be checked & adjusted by reading the Stack Highwater
-  //    ,  NULL
-  //    ,  0  // Priority, with 3 (configMAX_PRIORITIES - 1) being the highest, and 0 being the lowest.
-  //    ,  NULL );
+    Serial.print(1);
+//    xTaskCreate(
+//      TaskSerialPrinter
+//      ,  (const portCHAR *)"SerialP"   // A name just for humans
+//      ,  128  // This stack size can be checked & adjusted by reading the Stack Highwater
+//      ,  NULL
+//      ,  0  // Priority, with 3 (configMAX_PRIORITIES - 1) being the highest, and 0 being the lowest.
+//      ,  NULL );
 
   xTaskCreate(
     TaskUpdatePID
@@ -184,32 +185,32 @@ void setup() {
     ,  NULL
     ,  2  // Priority, with 3 (configMAX_PRIORITIES - 1) being the highest, and 0 being the lowest.
     ,  NULL );
-
+Serial.print(2);
   xTaskCreate(
     TaskProgramButton
     ,  (const portCHAR *)"PButton"   // A name just for humans
-    ,  130  // This stack size can be checked & adjusted by reading the Stack Highwater
+    ,  100  // This stack size can be checked & adjusted by reading the Stack Highwater
     ,  NULL
     ,  1  // Priority, with 3 (configMAX_PRIORITIES - 1) being the highest, and 0 being the lowest.
     ,  NULL );
-
-  //  xTaskCreate(
-  //    TaskCreateProgram
-  //    ,  (const portCHAR *)"PMAKE"   // A name just for humans
-  //    ,  140  // This stack size can be checked & adjusted by reading the Stack Highwater
-  //    ,  NULL
-  //    ,  0  // Priority, with 3 (configMAX_PRIORITIES - 1) being the highest, and 0 being the lowest.
-  //    ,  &Handle_Create );
-  //
-  //
-  //  xTaskCreate(
-  //    TaskRunProgram
-  //    ,  (const portCHAR *)"PRUN"   // A name just for humans
-  //    ,  80  // This stack size can be checked & adjusted by reading the Stack Highwater
-  //    ,  NULL
-  //    ,  1  // Priority, with 3 (configMAX_PRIORITIES - 1) being the highest, and 0 being the lowest.
-  //    ,  &Handle_Run );
-
+Serial.print(3);
+    xTaskCreate(
+      TaskCreateProgram
+      ,  (const portCHAR *)"PMAKE"   // A name just for humans
+      ,  110  // This stack size can be checked & adjusted by reading the Stack Highwater
+      ,  NULL
+      ,  0  // Priority, with 3 (configMAX_PRIORITIES - 1) being the highest, and 0 being the lowest.
+      ,  &Handle_Create );
+  
+  Serial.print(4);
+    xTaskCreate(
+      TaskRunProgram
+      ,  (const portCHAR *)"PRUN"   // A name just for humans
+      ,  70  // This stack size can be checked & adjusted by reading the Stack Highwater
+      ,  NULL
+      ,  1  // Priority, with 3 (configMAX_PRIORITIES - 1) being the highest, and 0 being the lowest.
+      ,  &Handle_Run );
+Serial.print(5);
   // Now the task scheduler, which takes over control of scheduling individual tasks, is automatically started.
 }
 
@@ -349,7 +350,7 @@ void TaskButtonReader(void *pvParameters)
       readButtonSM(&StateUp, UP, &timerUp, &lastStateUp);
       if (StateUp & 0x01) tempRPM += RPMSTEP;
     }
-    if (Handle_Create != NULL) {
+    if (CreateF) {
       if (StateDown == NEWPRESS || StateUp == NEWPRESS) progTemp.cycle = OCR1B;   //On new press, update progTemp with current duty-cycle
       if (StateUp == UNPRESSED || StateDown == UNPRESSED) {
         progTemp.desiredRPM = desiredRPM;                                       //if the button was just unpressed update progTemp with new RPM
@@ -359,7 +360,7 @@ void TaskButtonReader(void *pvParameters)
     }
 
     if (tempRPM != 0) {
-      vTaskSuspend(Handle_Run);
+      if(RunF)vTaskSuspend(Handle_Run);
       //Make adjustments to tempRPM to avoid getting out of bounds. the min rpm thing might be kinda useless
       tempRPM += desiredRPM;
       if (tempRPM > maxrpm) tempRPM = maxrpm;
@@ -394,11 +395,14 @@ void TaskCreateProgram( void *pvParameters) {
 
   unsigned short state = 0;
   struct progSlice progTemp;
-  Serial.print("\nStarting2 Create\n");
+  //Serial.print("\nStarting2 Create\n");
+
+  vTaskSuspend(NULL);
+  EEPROMWrite16(0, 0);
+  
   for (;;) {
     vTaskSuspend(NULL);
     debugDAC(uxTaskPriorityGet(NULL), 1);
-    EEPROMWrite16(0, 0);
     if ( xQueueReceive(progQueue, &(progTemp), (TickType_t) 0)) {
       if (previousRPM == progTemp.desiredRPM) continue; //Check there was an actuall change to the RPM
       if (progTemp.desiredRPM == 0) state = ENDSTEP;
@@ -433,7 +437,7 @@ void TaskCreateProgram( void *pvParameters) {
       }
       //When speed is decreased keep some information.
       else if (state == HOLDSTEP) {
-        Serial.print("\nHELD"); Serial.print(progTemp.cycle);
+        //Serial.print("\nHELD"); Serial.print(progTemp.cycle);
         if (!tempCycle) tempCycle = progTemp.cycle;
         previousRPM = progTemp.desiredRPM;
       }
@@ -463,12 +467,12 @@ void TaskCreateProgram( void *pvParameters) {
           //Serial.print("\nn: "); Serial.print(i - 1); Serial.print("\nsetRPM: "); Serial.print(EEPROMRead16(i)); Serial.print("\t cycle: "); Serial.print(EEPROMRead16(i + 1));
           if (EEPROMRead16(i) == 0 ) {
             EEPROMWrite16(0, SIGNATURE);
-            Handle_Create = NULL;
-            vTaskDelete( NULL );
+            break;
           }
         }
-
-
+        CreateF=false;
+        vTaskSuspend(NULL);
+        EEPROMWrite16(0, 0);
       }
       //else  Serial.print("\nStill Alive");
     }
@@ -482,20 +486,7 @@ void TaskCreateProgram( void *pvParameters) {
 
 
 }
-void vTimerCallback( TimerHandle_t xTimer )
-{
 
-  Serial.print("fodak");
-  xTaskCreate(
-    TaskSerialPrinter
-    ,  (const portCHAR *)"PMAKE"   // A name just for humans
-    ,  200  // This stack size can be checked & adjusted by reading the Stack Highwater
-    ,  NULL
-    ,  0  // Priority, with 3 (configMAX_PRIORITIES - 1) being the highest, and 0 being the lowest.
-    ,  &Handle_Create );
-
-
-}
 
 void TaskProgramButton(void *pvParameters) {
 
@@ -506,15 +497,7 @@ void TaskProgramButton(void *pvParameters) {
   byte lastRead = HIGH;
 
   unsigned short count = 0;
-  TimerHandle_t xTimers;
 
-  xTimers = xTimerCreate(
-              "Timer",
-              10,
-              pdFALSE,
-              (void *)0,
-              vTimerCallback
-            );
 
   for (;;) {
     readButtonSM(&state, PROGRAM_BUTTON, &timer, &lastRead);
@@ -526,46 +509,28 @@ void TaskProgramButton(void *pvParameters) {
     else if (state == UNPRESSED) {
       if (count < LONGPRESS) {
         //check if there is available complete program
-        if (EEPROMRead16(0) == SIGNATURE && Handle_Run == NULL) {
+        if (EEPROMRead16(0) == SIGNATURE && !CreateF) {
+          Serial.print("\nRun\n");
           //Delete Create Task in case it exists in waiting
-          if (xHandle != NULL) {
-            xHandle = NULL;
-          }
-          //Create Task to run program
-          Serial.print("\nStarting Run\n");
-          xTaskCreate(
-            TaskRunProgram
-            ,  (const portCHAR *)"PRUN"   // A name just for humans
-            ,  100  // This stack size can be checked & adjusted by reading the Stack Highwater
-            ,  NULL
-            ,  1  // Priority, with 3 (configMAX_PRIORITIES - 1) being the highest, and 0 being the lowest.
-            ,  &Handle_Run );
-
-        } else if (Handle_Run != NULL) vTaskResume(Handle_Run);         //If already running but stopped for some reason, continue running
+          vTaskResume(Handle_Run);
+          if (!RunF) RunF=true;   
+        }
       } else {
         //Launch Task to create a program on long press. The system should be Idle to start this task
-        if (Handle_Run == NULL && desiredRPM == 0 && Handle_Create == NULL) {
-          Serial.print("\nStarting Create\n");
-          //xHandle = Handle_Create;
-          xTimerStart(xTimers, 0);
-          //          xTaskCreate(
-          //            TaskSerialPrinter
-          //            ,  (const portCHAR *)"PMAKE"   // A name just for humans
-          //            ,  200  // This stack size can be checked & adjusted by reading the Stack Highwater
-          //            ,  NULL
-          //            ,  0  // Priority, with 3 (configMAX_PRIORITIES - 1) being the highest, and 0 being the lowest.
-          //            ,  NULL );
-          if (Handle_Create == NULL) Serial.print("fuckttyfuck");
-          Serial.print("\nEND Create\n");
-        }
-        count = 0;
+        if (!CreateF && !RunF && desiredRPM == 0) {
+          Serial.print("\nCreate\n");
+          vTaskResume(Handle_Create);
+          CreateF = true;
+          
+        } 
       }
+      count = 0;
     }
     UBaseType_t uxHighWaterMark;
-    uxHighWaterMark = uxTaskGetStackHighWaterMark( Handle_Create );
+    uxHighWaterMark = uxTaskGetStackHighWaterMark( Handle_Create);
     Serial.print(uxHighWaterMark);
     Serial.print("\n");
-    vTaskDelay(6);
+    vTaskDelay(4);
   }
 }
 
@@ -596,9 +561,14 @@ void TaskRunProgram(void *pvParameters) {
     if (!rpmlock && !cyclelock) {
 
 
-      //Read program iteration from memory
-      Crpm = EEPROMRead16(address);
-      Ccycle = EEPROMRead16(address + 1);
+      //On Task launch/ Wait for program button to start task. Detect if program ended and wait here again 
+      if (Crpm = 0) {
+        RunF = false;
+        vTaskSuspend( NULL );
+        address=1;
+        Crpm = EEPROMRead16(address);
+        Ccycle = EEPROMRead16(address + 1);
+      }
 
       //Initiate locks for RPM and Cycle check
       rpmlock = true;
@@ -607,10 +577,7 @@ void TaskRunProgram(void *pvParameters) {
       //Update desiredRPM
       desiredRPM = Crpm;
 
-      if (Crpm = 0) {
-        Handle_Run = NULL;
-        vTaskDelete( NULL );
-      }
+      
 
       //Setup things for detecting the stuff
       rpmTimer = 0;
