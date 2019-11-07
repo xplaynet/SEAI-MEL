@@ -78,6 +78,7 @@ const int minoutputlimit = 50;      // limit of PID output
 const int maxoutputlimit = 400;     // limit of PID output
 const int minrpm = 300;             // min RPM
 const int maxrpm = 5000;            // max RPM
+const int runningrpm = 1000;
 
 //define function to count RPM on interrupt
 void tacho();
@@ -618,8 +619,8 @@ void TaskUpdatePID(void *pvParameters) {
   (void) pvParameters;
 
   double Setpoint, Input, Output;       // define PID variables
-  double sKp = 0.1, sKi = 0.2, sKd = 0; // PID tuning parameters for starting motor
-  double rKp = 0.25, rKi = 1, rKd = 0;  // PID tuning parameters for runnig motor
+  const double sKp = 0.1, sKi = 0.2, sKd = 0; // PID tuning parameters for starting motor
+  const double rKp = 0.5, rKi = 1, rKd = 0;  // PID tuning parameters for runnig motor
 
   bool localSlow = false;
   bool localRun = false;
@@ -646,7 +647,7 @@ void TaskUpdatePID(void *pvParameters) {
 
     Input = (micros() - timeru);
     time_in_sec = Input / 1000000;
-    Input = (float)(count - localCount) / time_in_sec;
+    Input = 7.5 * ((float)(count - localCount) / time_in_sec);
     RPM = Input;
 
     timeru = micros();
@@ -656,17 +657,16 @@ void TaskUpdatePID(void *pvParameters) {
 
     //Set flags for PID, maybe separate task when automated control is added
     if (Setpoint > 0) {
-      if (!localRun) {
-        if (Input < minrpm)localSlow = true; //If cold starting set slow start. Cold starting is defined if motor is below minimum RPM
+        if (Input < runningrpm)localSlow = true; //If cold starting set slow start. Cold starting is defined if motor is below minimum RPM
         localRun = true;
-      }
     } else if (!Input) localRun = false ;
+
 
     if (localRun) {
       //soft start
       if (localSlow == true) {
         myPID.SetTunings(sKp, sKi, sKd);        // Set the PID gain constants and start
-        if (RPM > minrpm) {
+        if (Input > runningrpm) {
           lastcounttime = millis();
           lastpiddelay = millis();
           localRun = true;
