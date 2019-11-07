@@ -619,8 +619,10 @@ void TaskUpdatePID(void *pvParameters) {
   (void) pvParameters;
 
   double Setpoint, Input, Output;       // define PID variables
+
   const double sKp = 0.25, sKi = 0.4, sKd = 0; // PID tuning parameters for starting motor
   const double rKp = 0.6, rKi = 1, rKd = 0;  // PID tuning parameters for runnig motor
+
 
   bool localSlow = false;
   bool localRun = false;
@@ -657,8 +659,13 @@ void TaskUpdatePID(void *pvParameters) {
 
     //Set flags for PID, maybe separate task when automated control is added
     if (Setpoint > 0) {
+<<<<<<< HEAD
       if (Input < runningrpm)localSlow = true; //If cold starting set slow start. Cold starting is defined if motor is below minimum RPM
       localRun = true;
+=======
+        if (Input < runningrpm)localSlow = true; //If cold starting set slow start. Cold starting is defined if motor is below minimum RPM
+        localRun = true;
+>>>>>>> caa0fdd739f3a3593406487acb55b6aacbd9bf83
     } else if (!Input) localRun = false ;
 
 
