@@ -78,6 +78,7 @@ const int minoutputlimit = 50;      // limit of PID output
 const int maxoutputlimit = 400;     // limit of PID output
 const int minrpm = 300;             // min RPM
 const int maxrpm = 5000;            // max RPM
+const int runningrpm = 1000;
 
 //define function to count RPM on interrupt
 void tacho();
@@ -525,7 +526,7 @@ void TaskProgramButton(void *pvParameters) {
     }
     UBaseType_t uxHighWaterMark;
     uxHighWaterMark = uxTaskGetStackHighWaterMark( NULL);
-    Serial.print(uxHighWaterMark); Serial.print("\nRPM"); Serial.print(RPM);Serial.print("\nDROM"); Serial.print(desiredRPM);
+    Serial.print(uxHighWaterMark); Serial.print("\nRPM"); Serial.print(RPM); Serial.print("\nDROM"); Serial.print(desiredRPM);
     Serial.print("\n");
     vTaskDelay(5);
   }
@@ -562,7 +563,7 @@ void TaskRunProgram(void *pvParameters) {
         RunF = false;
         vTaskSuspend( NULL );
         address = 1;
-        
+
       }
 
 
@@ -587,7 +588,7 @@ void TaskRunProgram(void *pvParameters) {
     //Wait for system to reach target RPM and then wait a bit to try and stabilize
     if (RPM >= Crpm && rpmlock ) {
       if (!rpmTimer) rpmTimer = millis();
-      else if (millis() - rpmTimer > RPM_DELAY_AUTO){
+      else if (millis() - rpmTimer > RPM_DELAY_AUTO) {
         rpmlock = false;
         Serial.print("\nunlocked rpm\n");
       }
@@ -604,7 +605,7 @@ void TaskRunProgram(void *pvParameters) {
       }
       if (readCycle <= Ccycle || (millis() - cycleTimeout) > AUTOTIMEOUT) {
         if (!cycleTimer) cycleTimer = millis();
-        else if ( (millis() - cycleTimer) > CYCLE_DELAY_AUTO){
+        else if ( (millis() - cycleTimer) > CYCLE_DELAY_AUTO) {
           Serial.print("\nunl cycle\n");
           cyclelock = false;
         }
@@ -618,8 +619,8 @@ void TaskUpdatePID(void *pvParameters) {
   (void) pvParameters;
 
   double Setpoint, Input, Output;       // define PID variables
-  double sKp = 0.1, sKi = 0.2, sKd = 0; // PID tuning parameters for starting motor
-  double rKp = 0.25, rKi = 1, rKd = 0;  // PID tuning parameters for runnig motor
+  const double sKp = 0.25, sKi = 0.4, sKd = 0; // PID tuning parameters for starting motor
+  const double rKp = 0.6, rKi = 1, rKd = 0;  // PID tuning parameters for runnig motor
 
   bool localSlow = false;
   bool localRun = false;
@@ -646,27 +647,26 @@ void TaskUpdatePID(void *pvParameters) {
 
     Input = (micros() - timeru);
     time_in_sec = Input / 1000000;
-    Input = (float)(count - localCount) / time_in_sec;
+    Input = 7.5 * ((float)(count - localCount) / time_in_sec);
     RPM = Input;
 
     timeru = micros();
     localCount = count;
     Setpoint = desiredRPM;
-    
+
 
     //Set flags for PID, maybe separate task when automated control is added
     if (Setpoint > 0) {
-      if (!localRun) {
-        if (Input < minrpm)localSlow = true; //If cold starting set slow start. Cold starting is defined if motor is below minimum RPM
-        localRun = true;
-      }
+      if (Input < runningrpm)localSlow = true; //If cold starting set slow start. Cold starting is defined if motor is below minimum RPM
+      localRun = true;
     } else if (!Input) localRun = false ;
+
 
     if (localRun) {
       //soft start
       if (localSlow == true) {
         myPID.SetTunings(sKp, sKi, sKd);        // Set the PID gain constants and start
-        if (RPM > minrpm) {
+        if (Input > runningrpm) {
           lastcounttime = millis();
           lastpiddelay = millis();
           localRun = true;
