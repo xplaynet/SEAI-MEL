@@ -12,10 +12,14 @@
 
 #define DACPWM 11
 #define PWM 10 //OC1B
-#define UP 14
-#define DOWN 17
+//#define UP 14
+//#define DOWN 17
 #define TAC 3
-#define PROGRAM_BUTTON 19
+//#define PROGRAM_BUTTON 19
+
+#define UP B00000001
+#define DOWN B00000100
+#define PROGRAM_BUTTON B00010000
 
 #define TASKNUMBER 3
 #define PROGSIZE 10
@@ -82,6 +86,11 @@ const int minrpm = 300;             // min RPM
 const int maxrpm = 5000;            // max RPM
 const int runningrpm = 1000;
 
+
+//const byte PROGRAM_BUTTON = B00100000;
+//const byte DOWN = B00010000;
+//const byte UP = B00000001;
+
 //define function to count RPM on interrupt
 void tacho();
 
@@ -113,18 +122,20 @@ QueueHandle_t progQueue;
 
 
 //define functions
-void readButtonSM(unsigned short int *state, int button, unsigned long *timer, byte *lastRead);
+void readButtonSM(unsigned short int *state, const byte reading, unsigned long *timer);
 
 // the setup function runs once when you press reset or power the board
 void setup() {
 
-  pinMode(UP, INPUT);               // Increase RPM
-  pinMode(DOWN, INPUT);             // Decrease RPM
-  pinMode(PROGRAM_BUTTON, INPUT);   // It's in the name
+  DDRC = 0;
+  PORTC = 0 ^ (UP|DOWN|PROGRAM_BUTTON); 
+//  pinMode(UP, INPUT);               // Increase RPM
+//  pinMode(DOWN, INPUT);             // Decrease RPM
+//  pinMode(PROGRAM_BUTTON, INPUT);   // It's in the name
   pinMode(TAC, INPUT);
-  digitalWrite(UP, HIGH);           // turn on pullup resistor
-  digitalWrite(DOWN, HIGH);         // turn on pullup resistor
-  digitalWrite(PROGRAM_BUTTON, HIGH);         // turn on pullup resistor
+//  digitalWrite(UP, HIGH);           // turn on pullup resistor
+//  digitalWrite(DOWN, HIGH);         // turn on pullup resistor
+//  digitalWrite(PROGRAM_BUTTON, HIGH);         // turn on pullup resistor
   digitalWrite(TAC, HIGH);
 
   // set up Timer1 Phase and Frequency Correct PWM Mode
@@ -193,7 +204,7 @@ void setup() {
     ,  NULL
     ,  2  // Priority, with 3 (configMAX_PRIORITIES - 1) being the highest, and 0 being the lowest.
     ,  &Handle_PID );
-    Serial.print(2);
+  Serial.print(2);
   //  xTaskCreate(
   //    TaskProgramButton
   //    ,  (const portCHAR *)"PButton"   // A name just for humans
@@ -278,9 +289,11 @@ void TaskButtonReader(void *pvParameters)
 
   struct progSlice progTemp;
 
-  bool lastStateUp = HIGH;
-  bool lastStateDown = HIGH;
-  bool lastProgB = HIGH;
+
+  byte buttons = 0;
+  //  bool lastStateUp = HIGH;
+  //  bool lastStateDown = HIGH;
+  //  bool lastProgB = HIGH;
   unsigned short StateUp = 0;
   unsigned short StateDown = 0;
   unsigned short StateProgB = 0;
@@ -290,28 +303,33 @@ void TaskButtonReader(void *pvParameters)
   unsigned int timerDown = 0;
   unsigned int timerProgB = 0;
 
+  unsigned short upCount = 0;
+  unsigned short downCount = 0;
+  unsigned short progCount = 0;
+
 
   long tempRPM;                   //desiredRPM is a shared variable so we need something to store
   //it so we can modify freely locally and at the end modify desiredRPM
 
-  unsigned short count = 0;
+
 
   for (;;) {
     //debugDAC(uxTaskPriorityGet(NULL), 1);
 
     tempRPM = 0;
+    buttons = PINC;
 
 
     //MANUAL SPEED CONTROL BUTTONS
     //Once a button is beeing pressed the other is ignored
     if (StateUp == START) {
-      readButtonSM(&StateDown, DOWN, &timerDown, &lastStateDown);
+      readButtonSM(&StateDown,buttons & DOWN, &timerDown);
       if (StateDown & 0x01) tempRPM -= RPMSTEP;                   //Update RPM on new button press or periodically when button is held
     }
 
     //Same thing as the other button but for increasing RPM
     if (StateDown == START) {
-      readButtonSM(&StateUp, UP, &timerUp, &lastStateUp);
+      readButtonSM(&StateUp,buttons & UP, &timerUp);
       if (StateUp & 0x01) tempRPM += RPMSTEP;
     }
     if (CreateF) {
@@ -338,14 +356,14 @@ void TaskButtonReader(void *pvParameters)
     }
     //AUTOMATED PROGRAM CONTROL BUTTON
 
-    readButtonSM(&StateProgB, PROGRAM_BUTTON, &timerProgB, &lastProgB);
+    readButtonSM(&StateProgB, buttons & PROGRAM_BUTTON, &timerProgB);
     //oof ok.
     //On short press, run stored program if it exists. If there is already a program running just make sure it's actually running
     //On long press, start Task to create a program, there should be no active create program tasks or run program tasks. The motor speed must be set to 0 to make sure the program starts on idle.
-    if (StateProgB == NEWPRESS) count = 0;
-    else if (StateProgB == PRESS) count++;
+    if (StateProgB == NEWPRESS) progCount = 0;
+    else if (StateProgB == PRESS) progCount++;
     else if (StateProgB == UNPRESSED) {
-      if (count < LONGPRESS) {
+      if (progCount < LONGPRESS) {
         //check if there is available complete program
         if (EEPROMRead16(0) == SIGNATURE && !CreateF) {
           Serial.print("\nRun\n");
@@ -364,6 +382,7 @@ void TaskButtonReader(void *pvParameters)
       }
       count = 0;
     }
+ 
     UBaseType_t uxHighWaterMark;
     uxHighWaterMark = uxTaskGetStackHighWaterMark( Handle_PID);
     Serial.print(uxHighWaterMark); Serial.print("\nRPM"); Serial.print(RPM); Serial.print("\nDROM"); Serial.print(desiredRPM);
@@ -371,7 +390,7 @@ void TaskButtonReader(void *pvParameters)
 
 
     //debugDAC(uxTaskPriorityGet(NULL), 0);
-    vTaskDelay(4);
+    vTaskDelay(100 / portTICK_PERIOD_MS);
   }
 
 }
@@ -389,11 +408,16 @@ void TaskCreateProgram( void *pvParameters) {
   struct progSlice progTemp;
   //Serial.print("\nStarting2 Create\n");
 
-  vTaskSuspend(NULL);
-  EEPROMWrite16(0, 0);
 
   for (;;) {
-    vTaskSuspend(NULL);
+
+    //Wait for Create Program button Press. Ignore this suspend once it started until it sopped recording
+    if (!CreateF) {
+      vTaskSuspend(NULL);
+      EEPROMWrite16(0, 0);
+    }
+
+    //vTaskSuspend(NULL);
     //debugDAC(uxTaskPriorityGet(NULL), 1);
     if ( xQueueReceive(progQueue, &(progTemp), (TickType_t) 0)) {
       if (previousRPM == progTemp.desiredRPM) continue; //Check there was an actuall change to the RPM
@@ -463,11 +487,10 @@ void TaskCreateProgram( void *pvParameters) {
           }
         }
         CreateF = false;
-        vTaskSuspend(NULL);
-        EEPROMWrite16(0, 0);
       }
       //else  Serial.print("\nStill Alive");
     }
+    vTaskDelay(500 / portTICK_PERIOD_MS);
 
 
 
@@ -613,7 +636,7 @@ void TaskUpdatePID(void *pvParameters) {
       tachoTimeoutCounter = 0;
 
 
-    //If tachometer isnt reading, if desiredRPM > 0 wait a bit, if not solved initiate motor stop
+      //If tachometer isnt reading, if desiredRPM > 0 wait a bit, if not solved initiate motor stop
     } else if (Setpoint != 0) {
       if ((tachoTimeoutCounter < MAXFAILREADS)) tachoTimeoutCounter++;
       else if (tachoTimeoutCounter >= MAXFAILREADS) {
@@ -622,7 +645,7 @@ void TaskUpdatePID(void *pvParameters) {
       }
     } else Input = 0;
 
-    
+
     RPM = Input;
 
 
@@ -727,24 +750,14 @@ void TaskSerialPrinter(void *pvParameters) {
 //}
 
 //State machine used for reading simple push buttons. state is used as function output.
-void readButtonSM(unsigned short *state, int button, unsigned int *timer, bool *lastRead) {
+void readButtonSM(unsigned short *state, const byte reading, unsigned int *timer) {
 
   unsigned int ltimer;
-  bool reading;
+
 
 
   ltimer = millis();
 
-  //Filter bouncing erros to avoid jumping erroneously and quickly through the state machine
-  if ((ltimer - *timer <= DDELAY)) {
-    reading = *lastRead;
-  } else {
-    reading = digitalRead(button);
-    if (reading != *lastRead) {
-      *timer = ltimer;
-      *lastRead = reading;
-    }
-  }
 
   //State machine to process input
   switch (*state) {
@@ -752,7 +765,10 @@ void readButtonSM(unsigned short *state, int button, unsigned int *timer, bool *
       break;
 
     case NEWPRESS: if (reading) *state = UNPRESSED;
-      else *state = HOLD;
+      else{
+        *state = HOLD;
+        *timer = ltimer;
+      }
       break;
 
     case HOLD: if (reading) *state = UNPRESSED;
