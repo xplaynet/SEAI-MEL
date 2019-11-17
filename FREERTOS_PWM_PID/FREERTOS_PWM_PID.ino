@@ -184,18 +184,18 @@ void setup() {
   xTaskCreate(
     TaskButtonReader
     ,  (const portCHAR *)"BReader"   // A name just for humans
-    ,  128  // This stack size can be checked & adjusted by reading the Stack Highwater
+    ,  80  // This stack size can be checked & adjusted by reading the Stack Highwater
     ,  NULL
     ,  1  // Priority, with 3 (configMAX_PRIORITIES - 1) being the highest, and 0 being the lowest.
     ,  &Handle_Button );
   Serial.print(1);
-  //    xTaskCreate(
-  //      TaskSerialPrinter
-  //      ,  (const portCHAR *)"SerialP"   // A name just for humans
-  //      ,  128  // This stack size can be checked & adjusted by reading the Stack Highwater
-  //      ,  NULL
-  //      ,  0  // Priority, with 3 (configMAX_PRIORITIES - 1) being the highest, and 0 being the lowest.
-  //      ,  NULL );
+      xTaskCreate(
+        TaskSerialPrinter
+        ,  (const portCHAR *)"SerialP"   // A name just for humans
+        ,  128  // This stack size can be checked & adjusted by reading the Stack Highwater
+        ,  NULL
+        ,  0  // Priority, with 3 (configMAX_PRIORITIES - 1) being the highest, and 0 being the lowest.
+        ,  NULL );
 
   xTaskCreate(
     TaskUpdatePID
@@ -383,10 +383,6 @@ void TaskButtonReader(void *pvParameters)
       count = 0;
     }
  
-    UBaseType_t uxHighWaterMark;
-    uxHighWaterMark = uxTaskGetStackHighWaterMark( Handle_PID);
-    Serial.print(uxHighWaterMark); Serial.print("\nRPM"); Serial.print(RPM); Serial.print("\nDROM"); Serial.print(desiredRPM);
-    Serial.print("\n");
 
 
     //debugDAC(uxTaskPriorityGet(NULL), 0);
@@ -399,12 +395,12 @@ void TaskCreateProgram( void *pvParameters) {
 
   (void) pvParameters;
 
-  unsigned int address = 1;                     //Keep track of address beeing written
-  unsigned int previousRPM = 0;                 //save previousRPM
-  unsigned int tempCycle = 0;                   //Keep Cycle when decresing RPM in case the machine is ending its work
+  unsigned int address;                     //Keep track of address beeing written
+  unsigned int previousRPM;                 //save previousRPM
+  unsigned int tempCycle;                   //Keep Cycle when decresing RPM in case the machine is ending its work
   unsigned int i;
 
-  unsigned short state = 0;
+  unsigned short state;
   struct progSlice progTemp;
   //Serial.print("\nStarting2 Create\n");
 
@@ -412,12 +408,17 @@ void TaskCreateProgram( void *pvParameters) {
   for (;;) {
 
     //Wait for Create Program button Press. Ignore this suspend once it started until it sopped recording
+    //Reset all local variables
     if (!CreateF) {
       vTaskSuspend(NULL);
       EEPROMWrite16(0, 0);
+      state=0;
+      previousRPM =0;
+      tempCycle =0;
+      address=1;
     }
 
-    //vTaskSuspend(NULL);
+    vTaskSuspend(NULL);
     //debugDAC(uxTaskPriorityGet(NULL), 1);
     if ( xQueueReceive(progQueue, &(progTemp), (TickType_t) 0)) {
       if (previousRPM == progTemp.desiredRPM) continue; //Check there was an actuall change to the RPM
@@ -653,7 +654,7 @@ void TaskUpdatePID(void *pvParameters) {
       if (Input < runningrpm)localSlow = true; //If cold starting set slow start. Cold starting is defined if motor is below minimum RPM
       localRun = true;
 
-    } else if (!Input) localRun = false ;
+    } else localRun = false ;
 
 
     if (localRun) {
@@ -699,14 +700,17 @@ void TaskSerialPrinter(void *pvParameters) {
   struct progSlice progTemp;
   unsigned long timer;
   UBaseType_t uxHighWaterMark;
-  uxHighWaterMark = uxTaskGetStackHighWaterMark( xHandle );
+  
   for (;;) {
-    vTaskSuspend(NULL);
+    //vTaskSuspend(NULL);
     //debugDAC(uxTaskPriorityGet(NULL), 1);
-    timer = millis();
-    Serial.print(timer);
+    uxHighWaterMark = uxTaskGetStackHighWaterMark( Handle_Create );
+    Serial.print("\nWaterMark: ");
+    Serial.print(uxHighWaterMark);
     Serial.print("\ndesiredRPM: ");
     Serial.print(desiredRPM);
+    Serial.print("\nReadRPM: ");
+    Serial.print(RPM);
     Serial.print("\nCycle: ");
     Serial.print(OCR1B);
     Serial.print("\n");
@@ -716,7 +720,7 @@ void TaskSerialPrinter(void *pvParameters) {
     //      Serial.print(progTemp.cycle);
     //      Serial.print("\n");
     //    }
-
+  
     //debugDAC(uxTaskPriorityGet(NULL), 0);
     vTaskDelay( 2000 / portTICK_PERIOD_MS );
   }
