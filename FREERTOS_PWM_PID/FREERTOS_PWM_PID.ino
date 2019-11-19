@@ -8,25 +8,28 @@
 #include <PID_v1.h>
 #include <EEPROM.h>
 
-#define DEV 1
+
+#define DEV 1             //Comment to allow writing to EEPROM
 
 #define DACPWM 11
 #define PWM 10 //OC1B
 //#define UP 14
-//#define DOWN 17
+//#define DOWN 16
 #define TAC 3
-//#define PROGRAM_BUTTON 19
+//#define PROGRAM_BUTTON 18
 
-#define UP B00000001
-#define DOWN B00000100
-#define PROGRAM_BUTTON B00010000
+//PORTC
+#define UP              B00000001       //Pin 14
+#define DOWN            B00000100       //Pin 16
+#define PROGRAM_BUTTON  B00010000       //Pin 18
 
-#define TASKNUMBER 3
-#define PROGSIZE 10
+//Debug stuff
+#define TASKNUMBER  3
+#define PROGSIZE    10
 
 //in miliseconds
-#define DDELAY 50    //reading delay to avoid jumping between button states
-#define LDELAY 500   //Long press delays
+#define DDELAY 50     //reading delay to avoid jumping between button states
+#define LDELAY 500    //Long press delays
 
 #define RPMSTEP 100
 
@@ -61,6 +64,7 @@ volatile unsigned int desiredRPM = 0;        //RPM selected by operator
 
 volatile bool loopflag = false;              // flag for soft start
 volatile bool runflag = false;               // flag for motor running state
+volatile bool errorflag = false;
 
 SemaphoreHandle_t semDAC = NULL;
 
@@ -128,16 +132,17 @@ void readButtonSM(unsigned short int *state, const byte reading, unsigned long *
 void setup() {
 
   DDRC = 0;
-  PORTC = 0 ^ (UP|DOWN|PROGRAM_BUTTON); 
-//  pinMode(UP, INPUT);               // Increase RPM
-//  pinMode(DOWN, INPUT);             // Decrease RPM
-//  pinMode(PROGRAM_BUTTON, INPUT);   // It's in the name
-  pinMode(TAC, INPUT);
-//  digitalWrite(UP, HIGH);           // turn on pullup resistor
-//  digitalWrite(DOWN, HIGH);         // turn on pullup resistor
-//  digitalWrite(PROGRAM_BUTTON, HIGH);         // turn on pullup resistor
-  digitalWrite(TAC, HIGH);
+  PORTC = 0 ^ (UP | DOWN | PROGRAM_BUTTON);
+  //  pinMode(UP, INPUT);               // Increase RPM
+  //  pinMode(DOWN, INPUT);             // Decrease RPM
+  //  pinMode(PROGRAM_BUTTON, INPUT);   // It's in the name
 
+  pinMode(TAC, INPUT);
+  //  digitalWrite(UP, HIGH);           // turn on pullup resistor
+  //  digitalWrite(DOWN, HIGH);         // turn on pullup resistor
+  //  digitalWrite(PROGRAM_BUTTON, HIGH);         // turn on pullup resistor
+  digitalWrite(TAC, HIGH);
+  
   // set up Timer1 Phase and Frequency Correct PWM Mode
   pinMode(PWM, OUTPUT);                            //PWM PIN for OC1B
   //reset registers
@@ -160,7 +165,7 @@ void setup() {
 
   //freqPWM = ??? it's lower than 62 500. I just changed CS bits to lower the frequency but didn't bother checking the prescaler because it doesn't matter.
   TCCR2A = _BV(COM2A1) | _BV(WGM21) | _BV(WGM20);
-  TCCR2B = _BV(CS20) | _BV(CS21) | _BV(CS22) ;
+  TCCR2B = _BV(CS20) | _BV(CS21) ;//| _BV(CS22) ;
   OCR2A = 123;
 
 
@@ -189,13 +194,6 @@ void setup() {
     ,  1  // Priority, with 3 (configMAX_PRIORITIES - 1) being the highest, and 0 being the lowest.
     ,  &Handle_Button );
   Serial.print(1);
-      xTaskCreate(
-        TaskSerialPrinter
-        ,  (const portCHAR *)"SerialP"   // A name just for humans
-        ,  128  // This stack size can be checked & adjusted by reading the Stack Highwater
-        ,  NULL
-        ,  0  // Priority, with 3 (configMAX_PRIORITIES - 1) being the highest, and 0 being the lowest.
-        ,  NULL );
 
   xTaskCreate(
     TaskUpdatePID
@@ -205,18 +203,18 @@ void setup() {
     ,  2  // Priority, with 3 (configMAX_PRIORITIES - 1) being the highest, and 0 being the lowest.
     ,  &Handle_PID );
   Serial.print(2);
-  //  xTaskCreate(
-  //    TaskProgramButton
-  //    ,  (const portCHAR *)"PButton"   // A name just for humans
-  //    ,  100  // This stack size can be checked & adjusted by reading the Stack Highwater
-  //    ,  NULL
-  //    ,  1  // Priority, with 3 (configMAX_PRIORITIES - 1) being the highest, and 0 being the lowest.
-  //    ,  NULL );
+  xTaskCreate(
+    TaskSerialPrinter
+    ,  (const portCHAR *)"SerialP"   // A name just for humans
+    ,  128  // This stack size can be checked & adjusted by reading the Stack Highwater
+    ,  NULL
+    ,  0  // Priority, with 3 (configMAX_PRIORITIES - 1) being the highest, and 0 being the lowest.
+    ,  NULL );
   Serial.print(3);
   xTaskCreate(
     TaskCreateProgram
     ,  (const portCHAR *)"PMAKE"   // A name just for humans
-    ,  110  // This stack size can be checked & adjusted by reading the Stack Highwater
+    ,  70  // This stack size can be checked & adjusted by reading the Stack Highwater
     ,  NULL
     ,  0  // Priority, with 3 (configMAX_PRIORITIES - 1) being the highest, and 0 being the lowest.
     ,  &Handle_Create );
@@ -246,6 +244,7 @@ void EEPROMWrite16(unsigned int address, unsigned int value) {
   Serial.print("DEV");
 #endif
 #ifndef DEV
+  Serial.print("NDEVR");
   address += address;
   EEPROM.write(address, (value >> 8) & 0xFF);
   EEPROM.write(address + 1, value & 0xFF);
@@ -274,6 +273,12 @@ unsigned int EEPROMRead16(unsigned int address) {
 /*--------------------------------------------------*/
 /*---------------------- Tasks ---------------------*/
 /*--------------------------------------------------*/
+
+void TaskBackgroundChecks(void *pvParameters){
+  (void) pvParameters;
+
+  
+}
 
 void TaskButtonReader(void *pvParameters)
 {
@@ -317,19 +322,20 @@ void TaskButtonReader(void *pvParameters)
     //debugDAC(uxTaskPriorityGet(NULL), 1);
 
     tempRPM = 0;
+    //READ PINC bank to buttons
     buttons = PINC;
 
 
     //MANUAL SPEED CONTROL BUTTONS
     //Once a button is beeing pressed the other is ignored
     if (StateUp == START) {
-      readButtonSM(&StateDown,buttons & DOWN, &timerDown);
+      readButtonSM(&StateDown, buttons & DOWN, &timerDown);
       if (StateDown & 0x01) tempRPM -= RPMSTEP;                   //Update RPM on new button press or periodically when button is held
     }
 
     //Same thing as the other button but for increasing RPM
     if (StateDown == START) {
-      readButtonSM(&StateUp,buttons & UP, &timerUp);
+      readButtonSM(&StateUp, buttons & UP, &timerUp);
       if (StateUp & 0x01) tempRPM += RPMSTEP;
     }
     if (CreateF) {
@@ -382,7 +388,7 @@ void TaskButtonReader(void *pvParameters)
       }
       count = 0;
     }
- 
+
 
 
     //debugDAC(uxTaskPriorityGet(NULL), 0);
@@ -412,10 +418,10 @@ void TaskCreateProgram( void *pvParameters) {
     if (!CreateF) {
       vTaskSuspend(NULL);
       EEPROMWrite16(0, 0);
-      state=0;
-      previousRPM =0;
-      tempCycle =0;
-      address=1;
+      state = 0;
+      previousRPM = 0;
+      tempCycle = 0;
+      address = 1;
     }
 
     vTaskSuspend(NULL);
@@ -480,13 +486,6 @@ void TaskCreateProgram( void *pvParameters) {
         //Serial.print("\nFinishing");
         EEPROMWrite16(0, SIGNATURE);
         //Serial.print("\n"); Serial.print(EEPROMRead16(0));
-        for (i = 1; i < (PROGSIZE * 2) - 2 ; i += 2) {
-          //Serial.print("\nn: "); Serial.print(i - 1); Serial.print("\nsetRPM: "); Serial.print(EEPROMRead16(i)); Serial.print("\t cycle: "); Serial.print(EEPROMRead16(i + 1));
-          if (EEPROMRead16(i) == 0 ) {
-            EEPROMWrite16(0, SIGNATURE);
-            break;
-          }
-        }
         CreateF = false;
       }
       //else  Serial.print("\nStill Alive");
@@ -583,14 +582,17 @@ void TaskRunProgram(void *pvParameters) {
         }
       }
     }
-    vTaskDelay(6);
+    vTaskDelay(1000/ portTICK_PERIOD_MS);
   }
 }
+
+
+
 void TaskUpdatePID(void *pvParameters) {
 
   (void) pvParameters;
 
-  double Setpoint, Input, Output;       // define PID variables
+  double Setpoint, Input, Output, Hold;       // define PID variables
 
   const double sKp = 0.25, sKi = 0.4, sKd = 0; // PID tuning parameters for starting motor
   const double rKp = 0.6, rKi = 1, rKd = 0;  // PID tuning parameters for runnig motor
@@ -611,8 +613,9 @@ void TaskUpdatePID(void *pvParameters) {
   myPID.SetSampleTime(sampleRate);    // Sets the sample rate
 
   //Initialize things
-  Input = 20;
-  Setpoint = 20;
+  Input = 0;
+  Setpoint = 0;
+  Hold = 0;
   //unsigned long timeru = 0;
   float time_in_sec = 0;
 
@@ -626,8 +629,10 @@ void TaskUpdatePID(void *pvParameters) {
     Setpoint = desiredRPM;
     localPeriod = period;
 
-    //Check if there's a new reading on tachometer, filter unreasonable values
-    if (count != localCount && localPeriod > 4000) {
+    //CATCH ERRORS BEFORE PWM CONTROL
+    
+    //Check if there's a new reading on tachometer. convert period -> frequency -> rpm (frequency * 7.5)
+    if (count != localCount && !errorflag) {
       Input = localPeriod;
 
       Input = ((float)1 / (float)Input) * 1000000;
@@ -637,28 +642,32 @@ void TaskUpdatePID(void *pvParameters) {
       tachoTimeoutCounter = 0;
 
 
-      //If tachometer isnt reading, if desiredRPM > 0 wait a bit, if not solved initiate motor stop
-    } else if (Setpoint != 0) {
-      if ((tachoTimeoutCounter < MAXFAILREADS)) tachoTimeoutCounter++;
-      else if (tachoTimeoutCounter >= MAXFAILREADS) {
-        Input = maxrpm * 2; //Setup warning
+      
+    } else if (Setpoint != 0) {//If tachometer isnt reading, if desiredRPM > 0 wait a bit, if not solved initiate motor stop
+      Input = Hold;
+      if ( tachoTimeoutCounter <= (MAXFAILREADS * 11)) tachoTimeoutCounter++;
+      else if (tachoTimeoutCounter >= (MAXFAILREADS + (localSlow * MAXFAILREADS * 3))) {
+        //Input = maxrpm * 2; //Setup warning
+        errorflag = true;
         Setpoint = 0;
       }
-    } else Input = 0;
+    } 
 
 
     RPM = Input;
 
 
+
+    //PWM DUTY-CYCLE CONTROL
     if (Setpoint > 0) {
       if (Input < runningrpm)localSlow = true; //If cold starting set slow start. Cold starting is defined if motor is below minimum RPM
       localRun = true;
 
     } else localRun = false ;
 
-
-    if (localRun) {
-      //soft start
+    
+    if (localRun &!errorflag) {
+      //SOFT START
       if (localSlow == true) {
         myPID.SetTunings(sKp, sKi, sKd);        // Set the PID gain constants and start
         if (Input > runningrpm) {
@@ -670,7 +679,7 @@ void TaskUpdatePID(void *pvParameters) {
       }
 
       // normal motor running state
-      else if (localSlow == false) {
+      else {
         unsigned long piddelay = millis();
         if ((piddelay - lastpiddelay) > 1000) {     // delay to switch PID values. Prevents hard start
           myPID.SetTunings(rKp, rKi, rKd);          // Set the PID gain constants and start
@@ -683,7 +692,7 @@ void TaskUpdatePID(void *pvParameters) {
     }
     else cycle = 0;
     //Might need some work done here
-
+    Hold = Input;
     OCR1B = cycle;
     //debugDAC(uxTaskPriorityGet(NULL), 0);
     //Serial.print(RPM);Serial.print("\n");
@@ -700,9 +709,9 @@ void TaskSerialPrinter(void *pvParameters) {
   struct progSlice progTemp;
   unsigned long timer;
   UBaseType_t uxHighWaterMark;
-  
+  //bool tre = false;
+
   for (;;) {
-    //vTaskSuspend(NULL);
     //debugDAC(uxTaskPriorityGet(NULL), 1);
     uxHighWaterMark = uxTaskGetStackHighWaterMark( Handle_Create );
     Serial.print("\nWaterMark: ");
@@ -713,14 +722,10 @@ void TaskSerialPrinter(void *pvParameters) {
     Serial.print(RPM);
     Serial.print("\nCycle: ");
     Serial.print(OCR1B);
-    Serial.print("\n");
-    //    if ( xQueueReceive(progQueue, &(progTemp), (TickType_t) 0)) {
-    //      Serial.print(progTemp.desiredRPM);
-    //      Serial.print(" | ");
-    //      Serial.print(progTemp.cycle);
-    //      Serial.print("\n");
-    //    }
-  
+    if(errorflag){
+      Serial.print("\nErrorFound");
+    }
+
     //debugDAC(uxTaskPriorityGet(NULL), 0);
     vTaskDelay( 2000 / portTICK_PERIOD_MS );
   }
@@ -769,7 +774,7 @@ void readButtonSM(unsigned short *state, const byte reading, unsigned int *timer
       break;
 
     case NEWPRESS: if (reading) *state = UNPRESSED;
-      else{
+      else {
         *state = HOLD;
         *timer = ltimer;
       }
@@ -797,11 +802,18 @@ void readButtonSM(unsigned short *state, const byte reading, unsigned int *timer
 
 }
 
+bool warningflag = false;
+
 unsigned long lastInt = 0;
 void tacho() {
   count++;
   period = micros() - lastInt;
   lastInt = micros();
+  if (period <= 400){
+    if(!warningflag)warningflag = true;
+    else errorflag = true;
+    
+  } else warningflag = false;
   //  unsigned long timer = micros() - lastflash;
   //  float time_in_sec  = ((float)timer) / 1000000;
   //  float prerpm = 60 / time_in_sec;
