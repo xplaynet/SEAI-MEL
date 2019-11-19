@@ -34,7 +34,7 @@
 #define RPMSTEP 100
 
 //For automated control and writing/reading EPPROM
-#define STARTADDRESS 2
+#define STARTADDRESS 1
 #define SIGNATURE 0xFACC
 #define AUTOTIMEOUT 30000 / portTICK_PERIOD_MS  // This should give us 30 second timer
 #define RPM_DELAY_AUTO 1000                     //Delay to try and wait for system stabilization before checking cycle
@@ -55,7 +55,7 @@
 #define ENDSTEP     3
 
 //AVOID BIG MISTAKES STUFF
-#define MAXFAILREADS 10
+#define MAXFAILREADS 1
 
 
 //Shared variables
@@ -84,9 +84,9 @@ const int debounceDelay = 50;       // the debounce time; increase if the output
 
 //PWM duty-cycle. 400 -> 100%
 //These variable are also shared but READ-ONLY so there is no concurrency problems
-const int minoutputlimit = 5;      // limit of PID output
+const int minoutputlimit = 8;      // limit of PID output
 const int maxoutputlimit = 400;     // limit of PID output
-const int minrpm = 300;             // min RPM
+const int minrpm = 600;             // min RPM
 const int maxrpm = 5000;            // max RPM
 const int runningrpm = 1000;
 
@@ -646,7 +646,7 @@ void TaskUpdatePID(void *pvParameters) {
     } else if (Setpoint != 0) {//If tachometer isnt reading, if desiredRPM > 0 wait a bit, if not solved initiate motor stop
       Input = Hold;
       if ( tachoTimeoutCounter <= (MAXFAILREADS * 11)) tachoTimeoutCounter++;
-      else if (tachoTimeoutCounter >= (MAXFAILREADS + (localSlow * MAXFAILREADS * 3))) {
+      else if (tachoTimeoutCounter >= (MAXFAILREADS + (localSlow * MAXFAILREADS * 30))) {
         //Input = maxrpm * 2; //Setup warning
         errorflag = true;
         Setpoint = 0;
@@ -809,11 +809,11 @@ void tacho() {
   count++;
   period = micros() - lastInt;
   lastInt = micros();
-  if (period <= 400){
-    if(!warningflag)warningflag = true;
-    else errorflag = true;
-    
-  } else warningflag = false;
+//  if (period <= 400){
+//    if(!warningflag)warningflag = true;
+//    else errorflag = true;
+//    
+//  } else warningflag = false;
   //  unsigned long timer = micros() - lastflash;
   //  float time_in_sec  = ((float)timer) / 1000000;
   //  float prerpm = 60 / time_in_sec;
