@@ -125,6 +125,9 @@ void readButtonSM(unsigned short int *state, const byte reading, unsigned int *t
 //define function to count RPM on interrupt
 void tacho();
 
+//define funciont to deal with too much current
+void overCurrent();
+
 
 // the setup function runs once when you press reset or power the board
 void setup() {
@@ -170,7 +173,7 @@ void setup() {
 
   // set up tacho sensor interrupt IRQ1 on pin3
   attachInterrupt(digitalPinToInterrupt(TAC), tacho, FALLING);
-
+  attachInterrupt(digitalPinToInterrupt(CURRENT4), overCurrent, FALLING);
   // initialize serial communication at x bits per second:
   Serial.begin(57600);
 
@@ -691,7 +694,9 @@ void TaskUpdatePID(void *pvParameters) {
       }
       myPID.Compute();
       //dimming = map(Output, minoutputlimit, maxoutputlimit, maxoutputlimit, minoutputlimit); // reverse the output
-      cycle = constrain(Output, minoutputlimit, maxoutputlimit);     // check that dimming is in range
+      if(errorflag)cycle = 0;
+      else cycle = constrain(Output, minoutputlimit, maxoutputlimit);     // check that dimming is in range
+      
     }
     else cycle = 0;
     //Might need some work done here
@@ -806,6 +811,12 @@ void readButtonSM(unsigned short *state, const byte reading, unsigned int *timer
 }
 
 bool warningflag = false;
+
+
+void overCurrent(){
+  OCR1B = 0;
+  errorflag = true;
+}
 
 unsigned long lastInt = 0;
 void tacho() {

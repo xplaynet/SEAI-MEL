@@ -26,8 +26,11 @@
 
 //POWER CIRCUIT
 #define PWM                   10 //OC1B, Do not change
-#define TAC                   3  //Do not change
-//todo current detection pins
+#define TAC                   3  //Do not change, Can switch with CURRENT4
+#define CURRENT4              2  //Do not change, Can switch with TAC
+#define CURRENT3              4
+#define CURRENT2              5
+#define CURRENT1              6     
 
 
 /*
