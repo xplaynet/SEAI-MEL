@@ -7,31 +7,22 @@
 //#include <Rotary.h>
 #include <PID_v1.h>
 #include <EEPROM.h>
+#include "program_config.h"
+
 
 
 #define DEV 1             //Comment to allow writing to EEPROM and disable the disabler
 
+
+
+//Debugger PINS
 #define DACPWM                11
-#define PWM                   10 //OC1B
-//#define UP                  14
-//#define DOWN                16
-#define TAC                   3
-//#define PROGRAM_BUTTON      18
 #define FAILSAFE_GONE_BUTTON  0
 
-//PORTC
-#define UP              B00000001       //Pin 14
-#define DOWN            B00000100       //Pin 16
-#define PROGRAM_BUTTON  B00010000       //Pin 18
 
 //Debug stuff
 #define TASKNUMBER  3
 #define PROGSIZE    10
-
-
-#define LDELAY 500    //Long press delays in miliseconds
-
-#define RPMSTEP 100   //Increment or decrement desiredRPM by this amount for each trigger
 
 //For automated control and writing/reading EPPROM
 #define STARTADDRESS      1
@@ -54,9 +45,7 @@
 #define CORRECTSTEP 2
 #define ENDSTEP     3
 
-//AVOID BIG BOOM
-#define NORMAL_FAIL_READS     50 / portTICK_PERIOD_MS         //for 50 miliseconds 
-#define SLOWSTART_FAIL_READS  1000 / portTICK_PERIOD_MS       //SLOWSTART_FAIL_READS must always be bigger than NORMAL_FAIL_READS
+
 
 
 //TASK PERIODS
@@ -66,6 +55,9 @@
 #define CREATE_PROGRAM_PERIOD   500 / portTICK_PERIOD_MS
 #define PRINT_PERIOD            200 / portTICK_PERIOD_MS
 
+#define PWM_MULTIPLIER    80/PWM_FREQ
+#define PWM_CEILLING      PWM_MULTIPLIER*100
+
 //Shared variables
 volatile unsigned int RPM = 0;               //read RPM from tachometer
 volatile unsigned int desiredRPM = 0;        //RPM selected by operator or program
@@ -74,6 +66,14 @@ volatile bool errorflag = false;            //Signal errors to PWM CONTROLLER
 
 volatile bool CreateF = false;              //Signal program to start recording or stop recording, should be followed by task_resume
 volatile bool RunF = false;                 //Signal program to start cycling, should be followed by task_resume
+
+//(%duty-cyle = PID_output/400 * 100 | output = 8 -> duty-cycle = 2% | output = 100 -> duty-cycle = 100%)
+const int minoutputlimit = MIN_DUTY_CYCLE * PWM_MULTIPLIER;       
+const int maxoutputlimit = MAX_DUTY_CYCLE * PWM_MULTIPLIER;       
+const int minrpm = MIN_RPM;             // min RPM
+const int maxrpm = MAX_RPM;             // max RPM
+const int runningrpm = 1000;
+
 
 SemaphoreHandle_t semDAC = NULL;
 
@@ -89,13 +89,7 @@ unsigned int progRecord[PROGSIZE * 2];      //Store program generated temporaril
 
 const int sampleRate = 1;           // Variable that determines how fast our PID loop | Task delays already take care of that so we can set this no minimum
 
-//PWM duty-cycle. 400 -> 100%
-//These variable are also shared but READ-ONLY so there is no concurrency problems
-const int minoutputlimit = 8;      // limit of PID output
-const int maxoutputlimit = 400;     // limit of PID output
-const int minrpm = 600;             // min RPM
-const int maxrpm = 5000;            // max RPM
-const int runningrpm = 1000;
+
 
 //define tasks
 void TaskButtonReader(void *pvParameters);
@@ -158,7 +152,7 @@ void setup() {
   //Set bits for Phase and Frequency Correct 20khz PWM
   TCCR1A = _BV(COM1B1) | _BV(WGM10);                //Set compare mode and bit 0 for mode selection
   TCCR1B = _BV(CS10) | _BV(WGM13);                  //Prescaler 1, bit 3 for mode selection
-  OCR1A = maxoutputlimit;                           //FreqPWM = (16 000 000) / (2 * 1 * 400) = 20 000 hz
+  OCR1A = PWM_CEILLING;                             //FreqPWM = (16 000 000) / (2 * 1 * 400) = 20 000 hz
   OCR1B = 0;                                        //Register to compare for cycle (duty-cycle[0;400] -> [0;100]%)
 
   //Set up Timer2 for DAC with fast PWM
@@ -599,8 +593,8 @@ void TaskUpdatePID(void *pvParameters) {
 
   double Setpoint, Input, Output, Hold;       // define PID variables
 
-  const double sKp = 0.10, sKi = 0.4, sKd = 0;  // PID tuning parameters for starting motor
-  const double rKp = 0.25, rKi = 1, rKd = 0;    // PID tuning parameters for runnig motor
+  const double sKp = PID_KP, sKi = PID_KI, sKd = PID_KD;  // PID tuning parameters for starting motor
+  const double rKp = PID_KP, rKi = PID_KI, rKd = PID_KD;    // PID tuning parameters for runnig motor
 
 
   bool localSlow = true;
