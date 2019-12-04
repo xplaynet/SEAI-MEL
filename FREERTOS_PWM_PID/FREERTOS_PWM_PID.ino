@@ -97,6 +97,7 @@ void TaskUpdatePID(void *pvParameters);
 void TaskSerialPrinter(void *pvParameters);
 void TaskCreateProgram(void *pvParameters);
 void TaskRunProgram(void *pvParameters);
+void updateDutyCycle(void *pvParameters);
 
 //Handles for intertask things.
 TaskHandle_t xHandle = NULL;
@@ -140,6 +141,9 @@ void setup() {
   pinMode(TAC, INPUT);
   digitalWrite(TAC, HIGH);
 
+  pinMode(CURRENT4, INPUT);
+  pinMode(CURRENT4, HIGH);
+
 #ifdef dev
   pinMode(FAILSAFE_GONE_BUTTON, INPUT);
   digitalWrite(FAILSAFE_GONE_BUTTON, HIGH);
@@ -173,7 +177,7 @@ void setup() {
 
   // set up tacho sensor interrupt IRQ1 on pin3
   attachInterrupt(digitalPinToInterrupt(TAC), tacho, FALLING);
-  attachInterrupt(digitalPinToInterrupt(CURRENT4), overCurrent, FALLING);
+  attachInterrupt(digitalPinToInterrupt(CURRENT4), overCurrent, RISING);
   // initialize serial communication at x bits per second:
   Serial.begin(57600);
 
@@ -197,6 +201,20 @@ void setup() {
     ,  &Handle_Button );
   Serial.print(1);
 
+
+
+//Distinguish between automatic PID control or direct Duty cycle control
+#ifdef DUTY_CYCLE_DIRECT_CONTROL
+  xTaskCreate(
+    updateDutyCycle
+    ,  (const portCHAR *)"PIDctrl"   // A name just for humans
+    ,  108  // This stack size can be checked & adjusted by reading the Stack Highwater
+    ,  NULL
+    ,  2  // Priority, with 3 (configMAX_PRIORITIES - 1) being the highest, and 0 being the lowest.
+    ,  &Handle_PID );
+
+#endif
+#ifndef DUTY_CYCLE_DIRECT_CONTROL
   xTaskCreate(
     TaskUpdatePID
     ,  (const portCHAR *)"PIDctrl"   // A name just for humans
@@ -204,6 +222,11 @@ void setup() {
     ,  NULL
     ,  2  // Priority, with 3 (configMAX_PRIORITIES - 1) being the highest, and 0 being the lowest.
     ,  &Handle_PID );
+#endif
+
+
+
+
   Serial.print(2);
   xTaskCreate(
     TaskSerialPrinter
@@ -354,8 +377,8 @@ void TaskButtonReader(void *pvParameters)
       //Make adjustments to tempRPM to avoid getting out of bounds. the min rpm thing might be kinda useless
       tempRPM += desiredRPM;
       if (tempRPM > maxrpm) tempRPM = maxrpm;
-      else if (tempRPM == 100) tempRPM = minrpm;
-      else if (tempRPM == 200) tempRPM = 0;
+      else if (tempRPM == RPMSTEP) tempRPM = minrpm;
+      else if (tempRPM == minrpm - RPMSTEP) tempRPM = 0;
       else if (tempRPM < 0) tempRPM = 0;
 
 
@@ -588,8 +611,58 @@ void TaskRunProgram(void *pvParameters) {
   }
 }
 
+#ifdef DUTY_CYCLE_DIRECT_CONTROL
+void updateDutyCycle(void *pvParameters){
+
+  unsigned int duty_cycle = 0;
+  unsigned int localRPM = 0;
+  double modifier = 0;
+  (void) pvParameters;
+  unsigned int localCount = 0;
+  unsigned int tachoTimeoutCounter = 0;
+
+  for(;;){
+    localRPM = desiredRPM;
+
+    //Check if there's a new reading on tachometer. convert period -> frequency -> rpm (frequency * 7.5)
+    if (count != localCount && !errorflag) {
+      localCount = count;
+
+      tachoTimeoutCounter = 0;
 
 
+
+    } else if (localRPM != 0) {//If tachometer isnt reading, if desiredRPM > 0 wait a bit, if not solved initiate motor stop
+      if (tachoTimeoutCounter <= SLOWSTART_FAIL_READS) tachoTimeoutCounter++;
+      if (tachoTimeoutCounter >= SLOWSTART_FAIL_READS) {
+        //Input = maxrpm * 2; //Setup warning
+        errorflag = true;
+        localRPM = 0;
+#ifdef DEV
+        if (!digitalRead(FAILSAFE_GONE_BUTTON)) {
+          errorflag = false;
+          localRPM = desiredRPM;
+        }
+#endif
+      }
+    }
+
+  if(localRPM >= minrpm && !errorflag){
+    modifier = ((float)(localRPM-minrpm)) / (float)(maxrpm-minrpm);
+    duty_cycle = ((float)8 * ((float)1 - modifier)) + (float)((float)400 * (modifier));
+  } else duty_cycle = 0;
+  
+
+  OCR1B = duty_cycle;
+   
+  vTaskDelay(PWM_CONTROLLER_PERIOD);
+  }
+
+  
+}
+#endif
+
+#ifndef DUTY_CYCLE_DIRECT_CONTROL
 void TaskUpdatePID(void *pvParameters) {
 
   (void) pvParameters;
@@ -708,7 +781,7 @@ void TaskUpdatePID(void *pvParameters) {
   }
 
 }
-
+#endif
 
 void TaskSerialPrinter(void *pvParameters) {
 

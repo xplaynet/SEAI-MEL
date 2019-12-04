@@ -17,6 +17,7 @@
 
 //Buttons
 //PINC
+//Convertion table from pinC to position in register -> |x|x|19|18|17|16|15|14|
 #define UP              B00000001       //Pin 14
 #define DOWN            B00000100       //Pin 16
 #define PROGRAM_BUTTON  B00010000       //Pin 18
@@ -50,9 +51,6 @@
 /*
  * PID configurations
  */
-
-#define MIN_DUTY_CYCLE    2             //Min duty cycle in percentage. Must be >2
-#define MAX_DUTY_CYCLE    100           //Max duty cycle
 #define MIN_RPM           600           //Must be >600
 #define MAX_RPM           5000          
 
@@ -64,12 +62,17 @@
 /*
  * PWM configurations
  */
-#define PWM_FREQ 20                 //in Khz  
+#define PWM_FREQ 20                      //in Khz  
+#define MIN_DUTY_CYCLE    2             //Min duty cycle in percentage. Must be >2
+#define MAX_DUTY_CYCLE    100           //Max duty cycle
 
 
-        
 
-
+/*
+ * Software control modes
+ */
+//comment out to enable normal control with PID
+//#define DUTY_CYCLE_DIRECT_CONTROL 
 
 
 
