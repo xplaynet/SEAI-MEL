@@ -18,9 +18,9 @@
 //Buttons
 //PINC
 //Convertion table from pinC to position in register -> |x|x|19|18|17|16|15|14|
-#define UP              B00000001       //Pin 14
-#define DOWN            B00000100       //Pin 16
-#define PROGRAM_BUTTON  B00010000       //Pin 18
+//#define UP              B00000001       //Pin 14
+//#define DOWN            B00000100       //Pin 16
+//#define PROGRAM_BUTTON  B00010000       //Pin 18
 //#define UP                  14
 //#define DOWN                16
 //#define PROGRAM_BUTTON      18

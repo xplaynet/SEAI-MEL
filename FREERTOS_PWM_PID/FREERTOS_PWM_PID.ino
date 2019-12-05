@@ -34,13 +34,6 @@
 #define CYCLE_DELAY_AUTO  1000
 #define LONGPRESS         3                             //number of Long press triggers until it's considered long press time = LDELAY * x
 
-//Button states
-#define START     0
-#define NEWPRESS  1
-#define HOLD      2
-#define PRESS     3
-#define UNPRESSED 4
-
 //Program record states
 #define NEWSTEP     0
 #define HOLDSTEP    1
