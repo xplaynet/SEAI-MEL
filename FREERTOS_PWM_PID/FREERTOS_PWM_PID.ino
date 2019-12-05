@@ -8,6 +8,8 @@
 #include <PID_v1.h>
 #include <EEPROM.h>
 #include "program_config.h"
+#include "Interface_uc/serial_header.h"
+
 
 
 
@@ -57,6 +59,11 @@
 
 #define PWM_MULTIPLIER    80/PWM_FREQ
 #define PWM_CEILLING      PWM_MULTIPLIER*100
+
+
+//Serial Controls
+#define SERIAL_UP 0x
+
 
 //Shared variables
 volatile unsigned int RPM = 0;               //read RPM from tachometer
@@ -791,6 +798,7 @@ void TaskSerialPrinter(void *pvParameters) {
   unsigned long timer;
   UBaseType_t uxHighWaterMark;
   //bool tre = false;
+  byte incomingByte;
 
   for (;;) {
     //debugDAC(uxTaskPriorityGet(NULL), 1);
@@ -806,6 +814,14 @@ void TaskSerialPrinter(void *pvParameters) {
     if (errorflag) {
       Serial.print("\nErrorFound");
     }
+    if (Serial.available() > 0) {
+    // read the incoming byte:
+    incomingByte = Serial.read();
+
+    // say what you got:
+    Serial.print("\nI received: ");
+    Serial.println(incomingByte, DEC);
+  }
 
     //debugDAC(uxTaskPriorityGet(NULL), 0);
     vTaskDelay(PRINT_PERIOD );
