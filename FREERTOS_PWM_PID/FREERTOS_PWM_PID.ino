@@ -148,6 +148,8 @@ void setup() {
   pinMode(TAC, INPUT);
   digitalWrite(TAC, HIGH);
 
+
+  DDRC = (0 | _BV(PORTD1));
   pinMode(CURRENT4, INPUT);
   pinMode(CURRENT4, HIGH);
 
@@ -703,6 +705,8 @@ void TaskUpdatePID(void *pvParameters) {
 
   unsigned short tachoTimeoutCounter = 0;
 
+  byte currentReadings;
+
 
   for (;;) {
     //debugDAC(uxTaskPriorityGet(NULL), 1);
@@ -710,6 +714,9 @@ void TaskUpdatePID(void *pvParameters) {
 
     Setpoint = desiredRPM;
 
+
+   //currentReadings = (PIND & (_BV(CURRENT4) | _BV(CURRENT3) | _BV(CURRENT2) | _BV(CURRENT1)));
+   currentReadings  = (PIND & 0);
 
     //CATCH ERRORS BEFORE PWM CONTROL
 
